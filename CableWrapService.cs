@@ -57,8 +57,9 @@ namespace CableWrapMonitor {
         private CableWrapState    state;
         private CableWrapSettings settings;
         private readonly Timer    pollTimer;
-        private bool              disposed      = false;
-        private int               _pollTickCount = 0;
+        private bool              disposed           = false;
+        private int               _pollTickCount     = 0;
+        private int               _trackingTickCount = 0;
 
         // ── Observable properties (bound to the dockable panel UI) ────────────────
 
@@ -149,8 +150,20 @@ namespace CableWrapMonitor {
                 }
 
                 if (!info.TrackingEnabled && !info.Slewing) {
-                    TrackingStatus = TrackingStatus.Stopped;
+                    TrackingStatus     = TrackingStatus.Stopped;
+                    _trackingTickCount = 0;
                     return;
+                }
+
+                // Slewing: process every tick (1-second rate) for accurate slew tracking.
+                // Tracking: process every 5 ticks (5-second rate) to give the ALPACA driver
+                // time to update its RA value between samples.
+                if (info.Slewing) {
+                    _trackingTickCount = 0;
+                } else {
+                    _trackingTickCount++;
+                    if (_trackingTickCount < 5) return;
+                    _trackingTickCount = 0;
                 }
 
                 double currentRA = info.RightAscension; // hours, 0.0 – 24.0
