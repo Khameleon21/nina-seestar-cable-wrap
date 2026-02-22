@@ -146,7 +146,7 @@ namespace CableWrapMonitor {
                     return;
                 }
 
-                if (!info.Tracking) {
+                if (!info.TrackingEnabled) {
                     TrackingStatus    = TrackingStatus.Stopped;
                     state.LastKnownRA = null; // re-establish baseline when tracking resumes
                     return;
