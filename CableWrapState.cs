@@ -18,11 +18,11 @@ namespace CableWrapMonitor {
         public double TotalDegreesRotated { get; set; } = 0.0;
 
         /// <summary>
-        /// The telescope RA (in hours, 0–24) read during the previous poll cycle.
+        /// The telescope azimuth (in degrees, 0–360) read during the previous poll cycle.
         /// Null means we haven't established a baseline yet.
         /// </summary>
         [JsonProperty]
-        public double? LastKnownRA { get; set; } = null;
+        public double? LastKnownAzimuth { get; set; } = null;
 
         /// <summary>
         /// The UTC time at which the user last reset the counter.

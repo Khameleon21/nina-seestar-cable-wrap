@@ -15,8 +15,8 @@ using System.Runtime.InteropServices;
 // Unique identifier for this plugin — do NOT change once deployed
 [assembly: Guid("4a7b8c2d-1e3f-4956-b8c1-d2e3f4a56789")]
 
-[assembly: AssemblyVersion("0.1.2.0")]
-[assembly: AssemblyFileVersion("0.1.2.0")]
+[assembly: AssemblyVersion("0.1.3.0")]
+[assembly: AssemblyFileVersion("0.1.3.0")]
 
 // ── NINA Plugin metadata ──────────────────────────────────────────────────────
 // These are read by NINA's plugin loader and shown in the Plugin Manager.

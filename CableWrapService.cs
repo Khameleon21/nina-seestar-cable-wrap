@@ -144,8 +144,8 @@ namespace CableWrapMonitor {
                 var info = telescopeMediator.GetInfo();
 
                 if (!info.Connected) {
-                    TrackingStatus    = TrackingStatus.NotConnected;
-                    state.LastKnownRA = null; // re-establish baseline when scope reconnects
+                    TrackingStatus         = TrackingStatus.NotConnected;
+                    state.LastKnownAzimuth = null; // re-establish baseline when scope reconnects
                     return;
                 }
 
@@ -156,8 +156,7 @@ namespace CableWrapMonitor {
                 }
 
                 // Slewing: process every tick (1-second rate) for accurate slew tracking.
-                // Tracking: process every 5 ticks (5-second rate) to give the ALPACA driver
-                // time to update its RA value between samples.
+                // Tracking: process every 5 ticks (5-second rate).
                 if (info.Slewing) {
                     _trackingTickCount = 0;
                 } else {
@@ -166,22 +165,19 @@ namespace CableWrapMonitor {
                     _trackingTickCount = 0;
                 }
 
-                double currentRA = info.RightAscension; // hours, 0.0 – 24.0
+                double currentAzimuth = info.Azimuth; // degrees, 0.0 – 360.0
 
-                if (state.LastKnownRA.HasValue) {
-                    double delta = currentRA - state.LastKnownRA.Value;
+                if (state.LastKnownAzimuth.HasValue) {
+                    double delta = currentAzimuth - state.LastKnownAzimuth.Value;
 
-                    // Correct for the 0h/24h wraparound in the RA coordinate system.
-                    // A jump from 23.9h to 0.1h is a +0.2h forward step, not a -23.8h
-                    // backward jump.
-                    if (delta >  12.0) delta -= 24.0;
-                    if (delta < -12.0) delta += 24.0;
+                    // Correct for the 0°/360° wraparound in azimuth.
+                    // A jump from 359° to 1° is a +2° step, not a -358° step.
+                    if (delta >  180.0) delta -= 360.0;
+                    if (delta < -180.0) delta += 360.0;
 
-                    double deltaInDegrees = delta * 15.0; // 15°/hour
-
-                    // Count all RA movement — both sidereal tracking and slews physically
-                    // rotate the mount axis and wind the cable.
-                    state.TotalDegreesRotated += deltaInDegrees;
+                    // Azimuth is already in degrees — no conversion needed.
+                    // All azimuth movement winds the cable: tracking, slews, everything.
+                    state.TotalDegreesRotated += delta;
                     _totalDegreesRotated       = state.TotalDegreesRotated;
 
                     RaisePropertyChanged(nameof(TotalDegreesRotated));
@@ -194,7 +190,7 @@ namespace CableWrapMonitor {
                     TrackingStatus = TrackingStatus.Tracking;
                 }
 
-                state.LastKnownRA = currentRA;
+                state.LastKnownAzimuth = currentAzimuth;
 
                 // Save to disk every 10 seconds rather than every tick
                 _pollTickCount++;
@@ -257,7 +253,7 @@ namespace CableWrapMonitor {
             state.ZeroSetTimestamp    = DateTime.UtcNow;
             state.LastLoggedWrapCount = 0;
             state.AlertFired          = false;
-            state.LastKnownRA         = null; // re-establish baseline on next tick
+            state.LastKnownAzimuth    = null; // re-establish baseline on next tick
 
             _totalDegreesRotated = 0;
             RaisePropertyChanged(nameof(TotalDegreesRotated));
