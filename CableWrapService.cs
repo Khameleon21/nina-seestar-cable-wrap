@@ -16,6 +16,7 @@ namespace CableWrapMonitor {
     /// </summary>
     public enum TrackingStatus {
         NotConnected,
+        Stopped,
         Tracking,
         Warning
     }
@@ -142,6 +143,12 @@ namespace CableWrapMonitor {
 
                 if (!info.Connected) {
                     TrackingStatus = TrackingStatus.NotConnected;
+                    return;
+                }
+
+                if (!info.Tracking) {
+                    TrackingStatus    = TrackingStatus.Stopped;
+                    state.LastKnownRA = null; // re-establish baseline when tracking resumes
                     return;
                 }
 
