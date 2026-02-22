@@ -15,8 +15,8 @@ using System.Runtime.InteropServices;
 // Unique identifier for this plugin — do NOT change once deployed
 [assembly: Guid("4a7b8c2d-1e3f-4956-b8c1-d2e3f4a56789")]
 
-[assembly: AssemblyVersion("0.1.0.0")]
-[assembly: AssemblyFileVersion("0.1.0.0")]
+[assembly: AssemblyVersion("0.1.1.0")]
+[assembly: AssemblyFileVersion("0.1.1.0")]
 
 // ── NINA Plugin metadata ──────────────────────────────────────────────────────
 // These are read by NINA's plugin loader and shown in the Plugin Manager.
@@ -39,13 +39,13 @@ Tracks the cumulative RA axis rotation of your ZWO Seestar S50 telescope to dete
 and warn about USB cable wrap before it becomes a problem during remote imaging sessions.
 
 ### Features
-- Polls the telescope's Right Ascension value every 5 seconds
+- Polls the telescope every second and accumulates all RA axis rotation
+- Counts both sidereal tracking and slews — both physically wind the cable
 - Accumulates total rotation in both directions (unwinding counts back toward zero)
 - Warns you when the cable has wrapped beyond your configured threshold (default: 1 full rotation)
-- Logs a timestamped history of each 360° threshold crossing
+- Logs a timestamped history of each 360° crossing (last 1 hour retained)
 - Persists all state across NINA restarts — safe for remote sessions
-- Includes a 'Check Cable Wrap' sequence instruction for automated sequence pausing
-- Detects slews and ignores them so they don't count as cable movement
+- Includes a 'Check Cable Wrap' sequence instruction for automated sequence halting
 
 ### Setup
 1. Connect your Seestar S50 via the ZWO ALPACA driver in NINA

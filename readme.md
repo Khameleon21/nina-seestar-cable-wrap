@@ -1,6 +1,6 @@
 # NINA Plugin: Seestar Cable Wrap Monitor
 
-## Status: Initial code complete — not yet compiled or tested
+## Status: Beta — v0.1.x, actively testing
 
 ---
 
@@ -18,6 +18,7 @@ There is currently **no logic in NINA or the ZWO ALPACA driver** to track or war
 
 A NINA plugin that:
 - Tracks RA axis rotation over time using the standard ASCOM telescope interface exposed by the ZWO ALPACA driver
+- Counts **all** RA movement — both sidereal tracking and slews (both wind the cable)
 - Accumulates total rotation in degrees, bidirectionally (unwinding counts back toward zero)
 - Warns the user when the cable has wrapped past the configured threshold (default: 1 full rotation / 360°)
 - Provides a "Check Cable Wrap" sequence instruction that fails the sequence if the threshold is exceeded
@@ -51,8 +52,8 @@ CableWrapMonitor/
 ├── Plugin.cs                        # MEF export for IPluginManifest — NINA entry point
 ├── CableWrapState.cs                # CableWrapState, WrapHistoryEntry, CableWrapSettings
 │                                    # (JSON-serializable models for disk persistence)
-├── CableWrapService.cs              # Core logic: polls RA every 5 s, accumulates delta,
-│                                    # detects slews, fires alerts, saves/loads state
+├── CableWrapService.cs              # Core logic: polls RA every 1 s, accumulates delta,
+│                                    # saves state every 10 s, fires alerts
 ├── Dockable/
 │   ├── CableWrapDockableVM.cs       # Panel ViewModel — MEF [Export(typeof(IDockableVM))]
 │   ├── CableWrapDockable.xaml       # Panel UI (status, rotation, wrap count, history, reset)
@@ -81,118 +82,111 @@ NINA uses traditional MEF (`System.ComponentModel.Composition`) for plugin disco
 | `Resources` | `ResourceDictionary` | DataTemplates merged into NINA's app resources |
 
 ### CableWrapService
-The heart of the plugin. Injected with `ITelescopeMediator` by MEF. Runs a 5-second timer. On each tick:
+The heart of the plugin. Injected with `ITelescopeMediator` by MEF. Runs a 1-second timer. On each tick:
 1. Calls `telescopeMediator.GetInfo()` → `TelescopeInfo.RightAscension` (hours, 0–24)
-2. Computes signed RA delta, corrects for 0h/24h wraparound
-3. Ignores deltas > 5° (slew detection threshold, configurable)
-4. Accumulates delta into `TotalDegreesRotated`
-5. Logs each 360° crossing to history
-6. Fires `Notification.ShowWarning()` once per threshold crossing
-7. Saves full state to JSON on every tick
+2. Checks `Connected` — if false, sets NotConnected status, clears RA baseline, returns
+3. Checks `TrackingEnabled || Slewing` — if neither, sets Stopped status, returns
+4. Computes signed RA delta, corrects for 0h/24h wraparound
+5. Accumulates delta into `TotalDegreesRotated` (all movement — tracking and slews)
+6. Logs each 360° crossing to history
+7. Saves full state to JSON every 10 ticks (every ~10 seconds)
+
+### What Gets Counted
+**All physical RA axis rotation is counted**, including:
+- Sidereal tracking (slow, ~15°/hour)
+- Slews between targets (fast, potentially hundreds of degrees)
+
+Slews are not excluded because they physically rotate the mount axis and wind the cable just as much as tracking does. The mount sometimes takes the long way around when slewing, which can add 300+ degrees in a single target change.
+
+### Tracking Status
+| Status | Dot colour | Meaning |
+|---|---|---|
+| Not Connected | Gray | Telescope not connected in NINA |
+| Not Tracking | Blue | Connected but not tracking or slewing (at home/park) |
+| Tracking | Green | Connected and actively tracking or slewing |
+| ⚠ WRAP WARNING | Red | Accumulated rotation exceeds the threshold |
 
 ### State Persistence
 Two JSON files under `%LOCALAPPDATA%\NINA\Plugins\CableWrapMonitor\`:
-- `state.json` — accumulator, last known RA, wrap history, alert-fired flag
-- `settings.json` — warning threshold (rotations), slew detection threshold (degrees)
+- `state.json` — accumulator, last known RA, wrap history (last 1 hour), alert-fired flag
+- `settings.json` — warning threshold (rotations)
 
 State is loaded on service construction, so tracking resumes seamlessly after a NINA restart.
 
 ### Sequence Instruction
 `CheckCableWrapInstruction` is inserted into a NINA Advanced Sequence. When executed:
 - If `|TotalDegreesRotated| < threshold` → succeeds silently, sequence continues
-- If threshold exceeded → fires `Notification.ShowError()`, throws `Exception`, sequence stops
-
-### Direct Sequence Pause
-NINA's plugin API does not expose a way to externally cancel a running sequence from a background service. The dockable panel shows a red warning indicator and fires a toast notification. The **sequence instruction** is the correct mechanism for automated sequence halting. Users should add "Check Cable Wrap" between imaging targets.
+- If threshold exceeded → throws `Exception`, sequence stops
 
 ---
 
 ## Build Instructions
 
-1. Install **Visual Studio 2022** (Community is free) with the **.NET Desktop Development** workload
-2. Open this folder in Visual Studio (File → Open → Folder)
-3. Visual Studio will restore the `NINA.Plugin 3.2.0.9001` NuGet package automatically
-4. Build → Build Solution (Ctrl+Shift+B) using **Release** configuration
-5. Copy `bin\Release\CableWrapMonitor.dll` to `%LOCALAPPDATA%\NINA\Plugins\`
+1. Clone the repo on the Windows PC running NINA
+2. Open a terminal in the project folder
+3. Run: `dotnet build -c Release`
+4. Close NINA
+5. Copy `bin\Release\CableWrapMonitor.dll` to `%LOCALAPPDATA%\NINA\Plugins\3.0.0\`
 6. Restart NINA — the plugin loads automatically via MEF
 
----
-
-## Known Potential Compilation Issues
-
-These were identified as risks during code generation but could not be verified without building. Each has a straightforward fix:
-
-### 1. `DockableVM` constructor signature
-**Symptom:** Error about no matching constructor `DockableVM(IProfileService)`
-**Fix:** In `CableWrapDockableVM.cs`, remove the `IProfileService profileService` parameter and change `base(profileService)` to `base()`. Also remove the `IProfileService` import.
-
-### 2. `IDockableVM` namespace
-**Symptom:** `IDockableVM` could not be found in `NINA.WPF.Base.ViewModel`
-**Fix:** Add `using NINA.WPF.Base.Interfaces;` to `CableWrapDockableVM.cs`
-
-### 3. `BaseINPC` not found
-**Symptom:** `BaseINPC` does not exist in `NINA.Core.Utility`
-**Fix:** In `CableWrapService.cs`:
-- Add `using CommunityToolkit.Mvvm.ComponentModel;`
-- Change `: BaseINPC` to `: ObservableObject`
-- Change all `RaisePropertyChanged(nameof(X))` → `OnPropertyChanged(nameof(X))`
-- Change `RaisePropertyChanged()` (no arg, in property setters) → `OnPropertyChanged()`
-
-### 4. `Issues` property assignment
-**Symptom:** `Issues` has no setter, or setter is inaccessible
-**Fix:** In `CheckCableWrapInstruction.Validate()`, replace `Issues = issues;` with:
-```csharp
-Issues.Clear();
-foreach (var item in issues) Issues.Add(item);
-```
-
-### 5. `SequenceItem` namespace ambiguity
-**Symptom:** `SequenceItem is a namespace, not a type`
-**Fix:** In `CheckCableWrapInstruction.cs`, change the `using` to an alias:
-```csharp
-using NINASequenceItem = NINA.Sequencer.SequenceItem.SequenceItem;
-```
-Then change the class declaration to `: NINASequenceItem` and the copy constructor call to `base(other)`.
+To update after a `git pull`: repeat steps 3–6.
 
 ---
 
-## Functional Requirements (all implemented)
+## Versioning
+
+| Version | Meaning |
+|---|---|
+| `0.1.x` | Beta — bug fixes and tuning, no new features |
+| `0.2.0` | First new feature added after beta |
+| `1.0.0` | Stable release |
+
+Version is set in `Properties/AssemblyInfo.cs`. Bump the patch digit (`x`) on every change.
+
+---
+
+## Known Limitations
+
+- **Slew path variance**: The mount occasionally takes the long way around when slewing between targets (e.g. 300+ degrees instead of 60). This is real cable movement and is correctly counted, but means a single unlucky slew can consume most of your threshold budget. Set the threshold to 1.5–2.0 rotations if this happens frequently.
+- **Sidereal accumulation precision**: The ALPACA driver may cache the RA value and not update at exactly 1Hz. Sidereal drift accumulation (15°/hr) is approximate.
+- **No toast notifications**: The NINA 3.2 plugin API does not expose a public notification class. Alerts appear in the NINA log and as a red indicator in the panel. Use the sequence instruction for automated halting.
+- **No direct sequence pause**: NINA's plugin API does not allow a background service to cancel a running sequence. Use the "Check Cable Wrap" sequence instruction between imaging targets instead.
+
+---
+
+## Functional Requirements
 
 - [x] RA axis rotation tracking with 0h/24h wraparound handling
+- [x] All rotation counted — tracking and slews
 - [x] Signed accumulator (clockwise positive, counter-clockwise negative)
-- [x] Slew detection — deltas > 5° in one tick are ignored and logged
 - [x] Wrap count display as decimal fraction of full rotations
-- [x] Timestamped wrap history (last 100 entries kept)
+- [x] Timestamped wrap history (last 1 hour)
 - [x] Warning threshold configurable from 0.5 to 3.0 rotations (default 1.0)
 - [x] Alert fires once per threshold crossing, not every poll cycle
-- [x] NINA toast notification on threshold crossing
-- [x] State persisted to JSON on every poll tick
+- [x] State persisted to JSON every 10 seconds
 - [x] State loaded on startup — survives NINA restarts
 - [x] "Reset — Cable Unwound" button with Yes/No confirmation
 - [x] Reset records a manual-reset entry in the history
 - [x] Dockable panel with status indicator, rotation, wrap count, editable threshold, history list
-- [x] Graceful "Not Connected" state when telescope is disconnected
+- [x] Not Connected / Not Tracking / Tracking / Warning status indicator
 - [x] "Check Cable Wrap" sequence instruction that fails sequence on threshold breach
-- [ ] Direct sequence pause from background service (not possible via NINA's plugin API — use sequence instruction instead)
-
----
-
-## Edge Cases Handled
-
-- **Slews / meridian flips**: RA changes > 5° in one 5-second tick are logged as slews and excluded from the accumulator
-- **NINA restart mid-session**: State is fully restored from disk; tracking continues from last known position
-- **Telescope disconnects during session**: Timer continues running; each tick sets status to "Not Connected" and skips accumulation until reconnected
-- **Threshold changed after alert fires**: New threshold takes effect immediately on next tick; alert re-arms only after a reset
+- [ ] Toast notifications (NINA 3.2 API limitation)
+- [ ] Direct sequence pause from background service (NINA API limitation)
 
 ---
 
 ## Notes for Claude Code (future sessions)
 
-- User has no coding experience — write all code in full, never ask user to modify code manually
+- User has no coding experience — write all code in full, never ask user to modify manually
+- Solo project — no Co-Authored-By lines in any commits
 - Prioritize robustness over cleverness; this runs unattended at remote dark sites
 - NINA 3.2 is `.net8.0-windows`. One NuGet package (`NINA.Plugin 3.2.0.9001`) covers all dependencies
 - MEF uses `System.ComponentModel.Composition` (the traditional/legacy MEF), not `System.Composition`
+- `IDockableVM` is in `NINA.Equipment.Interfaces.ViewModel` (not WPF.Base)
+- `TelescopeInfo.TrackingEnabled` (bool) — NOT `.Tracking`
+- `Notification` class does not exist in NINA 3.2 — use Logger only
+- `ContentId` and `IsTool` on DockableVM must be property overrides, not constructor assignments
+- `SequenceItem.Validate()` is not virtual — no `override` keyword
 - The dockable panel DataTemplate key naming convention is critical: `{FullNamespace}.{ClassName}_Dockable`
-- `Resources.xaml` must have `x:Class="CableWrapMonitor.Resources"` to connect to its code-behind
-- State file path: `%LOCALAPPDATA%\NINA\Plugins\CableWrapMonitor\state.json`
-- Slew detection threshold default: 5°/tick. Normal sidereal rate is ~0.1°/tick, so this is safely above noise
+- DLL installs in `%LOCALAPPDATA%\NINA\Plugins\3.0.0\` alongside other plugins
+- Bump version (`0.1.x`) in `Properties/AssemblyInfo.cs` on every change
