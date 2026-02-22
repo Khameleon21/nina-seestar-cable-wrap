@@ -112,7 +112,7 @@ namespace CableWrapMonitor.SequenceItems {
         /// We report a warning in the sequencer UI if the telescope is not connected,
         /// so the user can see the check will be skipped.
         /// </summary>
-        public override bool Validate() {
+        public bool Validate() {
             var issues = new List<string>();
 
             if (service.TrackingStatus == TrackingStatus.NotConnected) {

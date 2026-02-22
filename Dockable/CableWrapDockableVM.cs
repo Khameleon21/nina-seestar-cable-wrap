@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
 using NINA.Profile.Interfaces;
+using NINA.WPF.Base.Interfaces;
 using NINA.WPF.Base.ViewModel;
 
 namespace CableWrapMonitor.Dockable {
