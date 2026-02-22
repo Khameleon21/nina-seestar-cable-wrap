@@ -145,7 +145,8 @@ namespace CableWrapMonitor {
 
                 if (!info.Connected) {
                     TrackingStatus         = TrackingStatus.NotConnected;
-                    state.LastKnownAzimuth = null; // re-establish baseline when scope reconnects
+                    state.LastKnownRA      = null;
+                    state.LastKnownAzimuth = null;
                     return;
                 }
 
@@ -155,42 +156,43 @@ namespace CableWrapMonitor {
                     return;
                 }
 
-                // Slewing: process every tick (1-second rate) for accurate slew tracking.
-                // Tracking: process every 5 ticks (5-second rate).
                 if (info.Slewing) {
-                    _trackingTickCount = 0;
+                    // ── SLEW MODE: use RA (azimuth is unreliable during slews) ──────────
+                    // Reset azimuth baseline so tracking picks up cleanly after the slew.
+                    _trackingTickCount     = 0;
+                    state.LastKnownAzimuth = null;
+
+                    double currentRA = info.RightAscension; // hours, 0.0 – 24.0
+                    if (state.LastKnownRA.HasValue) {
+                        double delta = currentRA - state.LastKnownRA.Value;
+                        if (delta >  12.0) delta -= 24.0;
+                        if (delta < -12.0) delta += 24.0;
+                        Accumulate(delta * 15.0);
+                    } else {
+                        TrackingStatus = TrackingStatus.Tracking;
+                    }
+                    state.LastKnownRA = currentRA;
+
                 } else {
+                    // ── TRACKING MODE: use Azimuth (RA is held constant during tracking) ─
+                    // Reset RA baseline so the next slew picks up cleanly.
+                    state.LastKnownRA = null;
+
                     _trackingTickCount++;
-                    if (_trackingTickCount < 5) return;
+                    if (_trackingTickCount < 5) return; // sample every 5 seconds
                     _trackingTickCount = 0;
+
+                    double currentAzimuth = info.Azimuth; // degrees, 0.0 – 360.0
+                    if (state.LastKnownAzimuth.HasValue) {
+                        double delta = currentAzimuth - state.LastKnownAzimuth.Value;
+                        if (delta >  180.0) delta -= 360.0;
+                        if (delta < -180.0) delta += 360.0;
+                        Accumulate(delta);
+                    } else {
+                        TrackingStatus = TrackingStatus.Tracking;
+                    }
+                    state.LastKnownAzimuth = currentAzimuth;
                 }
-
-                double currentAzimuth = info.Azimuth; // degrees, 0.0 – 360.0
-
-                if (state.LastKnownAzimuth.HasValue) {
-                    double delta = currentAzimuth - state.LastKnownAzimuth.Value;
-
-                    // Correct for the 0°/360° wraparound in azimuth.
-                    // A jump from 359° to 1° is a +2° step, not a -358° step.
-                    if (delta >  180.0) delta -= 360.0;
-                    if (delta < -180.0) delta += 360.0;
-
-                    // Azimuth is already in degrees — no conversion needed.
-                    // All azimuth movement winds the cable: tracking, slews, everything.
-                    state.TotalDegreesRotated += delta;
-                    _totalDegreesRotated       = state.TotalDegreesRotated;
-
-                    RaisePropertyChanged(nameof(TotalDegreesRotated));
-                    RaisePropertyChanged(nameof(WrapCount));
-
-                    CheckForWrapCrossing();
-                    CheckForWarningThreshold();
-                } else {
-                    // First tick after connection — establish baseline, no delta yet
-                    TrackingStatus = TrackingStatus.Tracking;
-                }
-
-                state.LastKnownAzimuth = currentAzimuth;
 
                 // Save to disk every 10 seconds rather than every tick
                 _pollTickCount++;
@@ -200,6 +202,16 @@ namespace CableWrapMonitor {
             } catch (Exception ex) {
                 Logger.Error($"CableWrapMonitor: Error during poll tick: {ex.Message}");
             }
+        }
+
+        // Adds a delta to the accumulator and updates the UI
+        private void Accumulate(double deltaInDegrees) {
+            state.TotalDegreesRotated += deltaInDegrees;
+            _totalDegreesRotated       = state.TotalDegreesRotated;
+            RaisePropertyChanged(nameof(TotalDegreesRotated));
+            RaisePropertyChanged(nameof(WrapCount));
+            CheckForWrapCrossing();
+            CheckForWarningThreshold();
         }
 
         // Logs a new entry every time the accumulator crosses another 360° multiple
@@ -253,7 +265,8 @@ namespace CableWrapMonitor {
             state.ZeroSetTimestamp    = DateTime.UtcNow;
             state.LastLoggedWrapCount = 0;
             state.AlertFired          = false;
-            state.LastKnownAzimuth    = null; // re-establish baseline on next tick
+            state.LastKnownRA         = null; // re-establish baselines on next tick
+            state.LastKnownAzimuth    = null;
 
             _totalDegreesRotated = 0;
             RaisePropertyChanged(nameof(TotalDegreesRotated));
