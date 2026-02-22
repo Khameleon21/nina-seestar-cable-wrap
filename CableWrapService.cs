@@ -143,13 +143,13 @@ namespace CableWrapMonitor {
                 var info = telescopeMediator.GetInfo();
 
                 if (!info.Connected) {
-                    TrackingStatus = TrackingStatus.NotConnected;
+                    TrackingStatus    = TrackingStatus.NotConnected;
+                    state.LastKnownRA = null; // re-establish baseline when scope reconnects
                     return;
                 }
 
                 if (!info.TrackingEnabled && !info.Slewing) {
-                    TrackingStatus    = TrackingStatus.Stopped;
-                    state.LastKnownRA = null; // re-establish baseline when tracking resumes
+                    TrackingStatus = TrackingStatus.Stopped;
                     return;
                 }
 
