@@ -54,10 +54,11 @@ namespace CableWrapMonitor {
 
         // ── Internal state ────────────────────────────────────────────────────────
 
-        private CableWrapState   state;
+        private CableWrapState    state;
         private CableWrapSettings settings;
-        private readonly Timer   pollTimer;
-        private bool             disposed = false;
+        private readonly Timer    pollTimer;
+        private bool              disposed      = false;
+        private int               _pollTickCount = 0;
 
         // ── Observable properties (bound to the dockable panel UI) ────────────────
 
@@ -125,8 +126,8 @@ namespace CableWrapMonitor {
             foreach (var entry in state.WrapHistory)
                 WrapHistory.Add(entry);
 
-            // Start the polling timer (5 second interval)
-            pollTimer           = new Timer(TimeSpan.FromSeconds(5).TotalMilliseconds);
+            // Start the polling timer (1 second interval, state saved every 10 ticks)
+            pollTimer           = new Timer(TimeSpan.FromSeconds(1).TotalMilliseconds);
             pollTimer.Elapsed  += OnPollTick;
             pollTimer.AutoReset = true;
             pollTimer.Start();
@@ -181,7 +182,11 @@ namespace CableWrapMonitor {
                 }
 
                 state.LastKnownRA = currentRA;
-                SaveState();
+
+                // Save to disk every 10 seconds rather than every tick
+                _pollTickCount++;
+                if (_pollTickCount % 10 == 0)
+                    SaveState();
 
             } catch (Exception ex) {
                 Logger.Error($"CableWrapMonitor: Error during poll tick: {ex.Message}");
@@ -260,14 +265,15 @@ namespace CableWrapMonitor {
 
             state.WrapHistory.Add(entry);
 
-            // Trim the persisted list to keep the JSON file small
-            while (state.WrapHistory.Count > 100)
+            // Trim entries older than 1 hour to keep the JSON file small
+            DateTime cutoff = DateTime.Now.AddHours(-1);
+            while (state.WrapHistory.Count > 0 && state.WrapHistory[0].Timestamp < cutoff)
                 state.WrapHistory.RemoveAt(0);
 
             // Update the observable collection on the UI thread
             Application.Current?.Dispatcher.Invoke(() => {
                 WrapHistory.Add(entry);
-                while (WrapHistory.Count > 100)
+                while (WrapHistory.Count > 0 && WrapHistory[0].Timestamp < cutoff)
                     WrapHistory.RemoveAt(0);
             });
         }
