@@ -1,0 +1,235 @@
+<UserControl x:Class="CableWrapMonitor.Dockable.CableWrapDockable"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:local="clr-namespace:CableWrapMonitor.Dockable"
+             xmlns:model="clr-namespace:CableWrapMonitor"
+             mc:Ignorable="d"
+             d:DesignWidth="300" d:DesignHeight="450">
+
+    <UserControl.Resources>
+
+        <!--
+            Status dot colour: green when tracking, orange when a slew is being ignored,
+            red when the warning threshold has been exceeded, grey when disconnected.
+        -->
+        <Style x:Key="StatusDotStyle" TargetType="Ellipse">
+            <Setter Property="Width"  Value="10" />
+            <Setter Property="Height" Value="10" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                             Value="{x:Static model:TrackingStatus.Tracking}">
+                    <Setter Property="Fill" Value="#3CB371" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                             Value="{x:Static model:TrackingStatus.SlewIgnored}">
+                    <Setter Property="Fill" Value="Orange" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                             Value="{x:Static model:TrackingStatus.Warning}">
+                    <Setter Property="Fill" Value="#FF4444" />
+                </DataTrigger>
+                <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                             Value="{x:Static model:TrackingStatus.NotConnected}">
+                    <Setter Property="Fill" Value="Gray" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+
+    </UserControl.Resources>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="8">
+
+            <!-- ── Header ───────────────────────────────────────────────── -->
+            <Border BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="0,0,0,6"
+                    Margin="0,0,0,8">
+                <TextBlock Text="🔌 Seestar Cable Wrap Monitor"
+                           FontWeight="Bold"
+                           FontSize="13"
+                           Foreground="{DynamicResource PrimaryBrush}" />
+            </Border>
+
+            <!-- ── Status row ────────────────────────────────────────────── -->
+            <Grid Margin="0,0,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Status:" VerticalAlignment="Center"
+                           Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <Ellipse Style="{StaticResource StatusDotStyle}" />
+                    <TextBlock VerticalAlignment="Center"
+                               Foreground="{DynamicResource PrimaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                                                 Value="{x:Static model:TrackingStatus.Tracking}">
+                                        <Setter Property="Text" Value="Tracking" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                                                 Value="{x:Static model:TrackingStatus.SlewIgnored}">
+                                        <Setter Property="Text" Value="Slew — ignored" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                                                 Value="{x:Static model:TrackingStatus.Warning}">
+                                        <Setter Property="Text" Value="⚠ WRAP WARNING" />
+                                        <Setter Property="FontWeight" Value="Bold" />
+                                        <Setter Property="Foreground" Value="#FF4444" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Service.TrackingStatus}"
+                                                 Value="{x:Static model:TrackingStatus.NotConnected}">
+                                        <Setter Property="Text" Value="Not Connected" />
+                                        <Setter Property="Foreground" Value="Gray" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+            </Grid>
+
+            <!-- ── Total rotation ────────────────────────────────────────── -->
+            <Grid Margin="0,2,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Total Rotation:"
+                           Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0"/>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding Service.TotalDegreesRotated, StringFormat={}{0:+0.0;-0.0;0.0}°}"
+                           FontWeight="Bold"
+                           Foreground="{DynamicResource PrimaryBrush}" />
+            </Grid>
+
+            <!-- ── Wrap count ─────────────────────────────────────────────── -->
+            <Grid Margin="0,2,0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Wrap Count:"
+                           Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0"/>
+                <TextBlock Grid.Column="1"
+                           Text="{Binding Service.WrapCount, StringFormat={}{0:+0.00;-0.00;0.00} wraps}"
+                           FontWeight="Bold"
+                           Foreground="{DynamicResource PrimaryBrush}" />
+            </Grid>
+
+            <!-- ── Warning threshold ──────────────────────────────────────── -->
+            <Grid Margin="0,2,0,8">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="Warning At:"
+                           Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0"
+                           VerticalAlignment="Center"/>
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBox Width="50"
+                             Text="{Binding Service.WarningThresholdRotations, StringFormat={}{0:0.0}, UpdateSourceTrigger=LostFocus}"
+                             VerticalAlignment="Center"
+                             Margin="0,0,4,0"
+                             ToolTip="Warning threshold in rotations (0.5 – 3.0). Press Enter or click away to apply." />
+                    <TextBlock Text="rotations" VerticalAlignment="Center"
+                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <TextBlock Text="{Binding Service.WarningThresholdDegrees, StringFormat= ({0:0}°)}"
+                               VerticalAlignment="Center"
+                               Foreground="Gray" />
+                </StackPanel>
+            </Grid>
+
+            <!-- ── Separator ─────────────────────────────────────────────── -->
+            <Border BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="0,1,0,0"
+                    Margin="0,0,0,8" />
+
+            <!-- ── Wrap history ───────────────────────────────────────────── -->
+            <TextBlock Text="Wrap History:"
+                       FontWeight="Bold"
+                       Foreground="{DynamicResource PrimaryBrush}"
+                       Margin="0,0,0,4" />
+
+            <Border BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="1"
+                    CornerRadius="3"
+                    Padding="4"
+                    MaxHeight="200">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <ItemsControl ItemsSource="{Binding Service.WrapHistory}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="0,1,0,1">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding Timestamp, StringFormat=[{0:yyyy-MM-dd HH:mm}]}"
+                                               Foreground="Gray"
+                                               FontFamily="Consolas"
+                                               FontSize="11"
+                                               Margin="0,0,6,0" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding Note}"
+                                               Foreground="{DynamicResource PrimaryBrush}"
+                                               FontSize="11"
+                                               TextWrapping="Wrap" />
+                                </Grid>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </Border>
+
+            <!-- Empty-history placeholder: visible only when list is empty -->
+            <TextBlock Text="No crossings recorded yet."
+                       Foreground="Gray"
+                       FontStyle="Italic"
+                       FontSize="11"
+                       Margin="4,2,0,0">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Service.WrapHistory.Count}" Value="0">
+                                <Setter Property="Visibility" Value="Visible" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+
+            <!-- ── Separator ─────────────────────────────────────────────── -->
+            <Border BorderBrush="{DynamicResource BorderBrush}"
+                    BorderThickness="0,1,0,0"
+                    Margin="0,8,0,8" />
+
+            <!-- ── Reset button ───────────────────────────────────────────── -->
+            <Button Command="{Binding ResetCommand}"
+                    Content="Reset — Cable Unwound"
+                    HorizontalAlignment="Stretch"
+                    Padding="8,6"
+                    FontWeight="Bold"
+                    ToolTip="Click only after you have physically unwound the USB cable." />
+
+            <!-- Reminder text below button -->
+            <TextBlock Text="Use this button only after physically unwinding the cable."
+                       Foreground="Gray"
+                       FontSize="10"
+                       FontStyle="Italic"
+                       TextWrapping="Wrap"
+                       HorizontalAlignment="Center"
+                       Margin="0,4,0,0" />
+
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

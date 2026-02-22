@@ -1,0 +1,35 @@
+<UserControl x:Class="CableWrapMonitor.SequenceItems.CheckCableWrapInstructionView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d"
+             d:DesignWidth="400" d:DesignHeight="60">
+
+    <!--
+        This view is shown inside the NINA Advanced Sequencer for each instance of
+        CheckCableWrapInstruction. It's intentionally compact — just a status line.
+        The full wrap details are in the dockable panel.
+    -->
+    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="4,0">
+
+        <TextBlock Text="Threshold: "
+                   Foreground="{DynamicResource PrimaryBrush}"
+                   VerticalAlignment="Center" />
+
+        <TextBlock Text="{Binding WarningThresholdRotations, StringFormat={}{0:0.0} rotations}"
+                   FontWeight="Bold"
+                   Foreground="{DynamicResource PrimaryBrush}"
+                   VerticalAlignment="Center" />
+
+        <TextBlock Text=" — Current: "
+                   Foreground="{DynamicResource PrimaryBrush}"
+                   VerticalAlignment="Center" />
+
+        <TextBlock Text="{Binding TotalDegreesRotatedDisplay}"
+                   FontWeight="Bold"
+                   Foreground="{DynamicResource PrimaryBrush}"
+                   VerticalAlignment="Center" />
+
+    </StackPanel>
+</UserControl>

@@ -1,0 +1,80 @@
+<ResourceDictionary x:Class="CableWrapMonitor.Resources"
+                    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+                    xmlns:dockable="clr-namespace:CableWrapMonitor.Dockable"
+                    xmlns:seq="clr-namespace:CableWrapMonitor.SequenceItems">
+
+    <!--
+        ══════════════════════════════════════════════════════════════════════════════
+        NINA plugin resource dictionary.
+
+        This class is exported as a ResourceDictionary MEF part (see Resources.xaml.cs)
+        so NINA merges it into the application's global resources at startup. That makes
+        the DataTemplates and the sequence icon available everywhere in the application.
+        ══════════════════════════════════════════════════════════════════════════════
+    -->
+
+    <!-- ── Sequence instruction icon ──────────────────────────────────────────── -->
+    <!--
+        A simple "USB plug + rotation arrow" icon for the Check Cable Wrap instruction
+        in the sequencer list. The key must match the ExportMetadata("Icon", ...) value
+        in CheckCableWrapInstruction.cs.
+    -->
+    <DrawingImage x:Key="CableWrapSequenceIcon">
+        <DrawingImage.Drawing>
+            <DrawingGroup>
+                <!-- Outer circle (cable loop) -->
+                <GeometryDrawing Brush="{DynamicResource ButtonForegroundBrush}">
+                    <GeometryDrawing.Geometry>
+                        <PathGeometry>
+                            <PathFigure StartPoint="10,1" IsClosed="false">
+                                <!-- Arc: top → right → bottom → left, stopping short of start -->
+                                <ArcSegment Point="19,10" Size="9,9" SweepDirection="Clockwise" />
+                                <ArcSegment Point="10,19" Size="9,9" SweepDirection="Clockwise" />
+                                <ArcSegment Point="1,10"  Size="9,9" SweepDirection="Clockwise" />
+                                <ArcSegment Point="10,3"  Size="9,9" SweepDirection="Clockwise" />
+                            </PathFigure>
+                            <!-- Arrow head at the end of the arc -->
+                            <PathFigure StartPoint="7,1">
+                                <LineSegment Point="10,4" />
+                                <LineSegment Point="13,1" />
+                            </PathFigure>
+                        </PathGeometry>
+                    </GeometryDrawing.Geometry>
+                    <GeometryDrawing.Pen>
+                        <Pen Brush="{DynamicResource ButtonForegroundBrush}" Thickness="1.8" />
+                    </GeometryDrawing.Pen>
+                </GeometryDrawing>
+                <!-- USB connector rectangle in the middle -->
+                <GeometryDrawing Brush="{DynamicResource ButtonForegroundBrush}">
+                    <GeometryDrawing.Geometry>
+                        <RectangleGeometry Rect="7.5,7.5,5,5" RadiusX="0.5" RadiusY="0.5" />
+                    </GeometryDrawing.Geometry>
+                </GeometryDrawing>
+            </DrawingGroup>
+        </DrawingImage.Drawing>
+    </DrawingImage>
+
+
+    <!-- ── Dockable panel DataTemplate ────────────────────────────────────────── -->
+    <!--
+        NINA's docking system looks for a DataTemplate whose x:Key is the fully
+        qualified class name of the ViewModel plus "_Dockable".
+        See: CableWrapMonitor.Dockable.CableWrapDockableVM
+    -->
+    <DataTemplate x:Key="CableWrapMonitor.Dockable.CableWrapDockableVM_Dockable">
+        <dockable:CableWrapDockable />
+    </DataTemplate>
+
+
+    <!-- ── Sequence instruction DataTemplate ──────────────────────────────────── -->
+    <!--
+        NINA's sequencer uses the DataType of each sequence item to find its view.
+        This template tells WPF: "when you see a CheckCableWrapInstruction, render
+        it as a CheckCableWrapInstructionView".
+    -->
+    <DataTemplate DataType="{x:Type seq:CheckCableWrapInstruction}">
+        <seq:CheckCableWrapInstructionView />
+    </DataTemplate>
+
+</ResourceDictionary>

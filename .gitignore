@@ -1,0 +1,26 @@
+# Build output
+bin/
+obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# NuGet packages (restored automatically on build — don't commit)
+packages/
+*.nupkg
+*.snupkg
+
+# Rider / JetBrains
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plugin data files (runtime state — personal to each machine)
+*.json
+!**/appsettings*.json
