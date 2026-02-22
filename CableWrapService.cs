@@ -224,7 +224,6 @@ namespace CableWrapMonitor {
                 "Check the telescope and unwind the cable, then click " +
                 "'Reset — Cable Unwound' in the Cable Wrap Monitor panel.";
 
-            Notification.ShowWarning(msg);
             Logger.Warning($"CableWrapMonitor: {msg}");
         }
 

@@ -4,7 +4,7 @@ using System.ComponentModel.Composition;
 using System.Threading;
 using System.Threading.Tasks;
 using NINA.Core.Model;
-using NINA.Core.Utility;
+using NINA.Core.Utility;   // Logger
 using NINA.Sequencer.SequenceItem;
 
 namespace CableWrapMonitor.SequenceItems {
@@ -91,7 +91,6 @@ namespace CableWrapMonitor.SequenceItems {
                     "Please unwind the USB cable and click 'Reset — Cable Unwound' " +
                     "in the Cable Wrap Monitor panel before continuing.";
 
-                Notification.ShowError(msg);
                 Logger.Error($"CableWrapMonitor (sequence): {msg}");
 
                 // Throwing any exception causes NINA to mark this item as Failed and
@@ -119,7 +118,6 @@ namespace CableWrapMonitor.SequenceItems {
                 issues.Add("Telescope not connected — cable wrap cannot be checked.");
             }
 
-            Issues = issues;
             return true; // Always allow the sequence to run; Execute() handles the real logic.
         }
     }

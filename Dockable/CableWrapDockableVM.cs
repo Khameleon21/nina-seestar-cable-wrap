@@ -29,9 +29,7 @@ namespace CableWrapMonitor.Dockable {
 
             Service = service;
 
-            Title     = "Cable Wrap Monitor";
-            ContentId = "CableWrapMonitor_Dockable";
-            IsTool    = true;
+            Title = "Cable Wrap Monitor";
 
             ResetCommand = new RelayCommand(ExecuteReset);
         }
@@ -40,6 +38,10 @@ namespace CableWrapMonitor.Dockable {
         /// Bound to the "Reset — Cable Unwound" button in the panel.
         /// Shows a confirmation dialog before zeroing the accumulator.
         /// </summary>
+        // ContentId and IsTool are read-only in NINA 3.2 — override as properties
+        public override string ContentId => "CableWrapMonitor_Dockable";
+        public override bool IsTool => true;
+
         public ICommand ResetCommand { get; }
 
         private void ExecuteReset() {
