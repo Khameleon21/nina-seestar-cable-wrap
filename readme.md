@@ -1,6 +1,6 @@
 # NINA Plugin: Seestar Cable Wrap Monitor
 
-## Status: Beta — v0.1.x, actively testing
+## Status: Beta — v0.1.4, actively testing
 
 ---
 
@@ -83,20 +83,27 @@ NINA uses traditional MEF (`System.ComponentModel.Composition`) for plugin disco
 
 ### CableWrapService
 The heart of the plugin. Injected with `ITelescopeMediator` by MEF. Runs a 1-second timer. On each tick:
-1. Calls `telescopeMediator.GetInfo()` → `TelescopeInfo.RightAscension` (hours, 0–24)
-2. Checks `Connected` — if false, sets NotConnected status, clears RA baseline, returns
+1. Calls `telescopeMediator.GetInfo()`
+2. Checks `Connected` — if false, sets NotConnected, clears both baselines, returns
 3. Checks `TrackingEnabled || Slewing` — if neither, sets Stopped status, returns
-4. Computes signed RA delta, corrects for 0h/24h wraparound
-5. Accumulates delta into `TotalDegreesRotated` (all movement — tracking and slews)
+4. **If slewing**: samples `RightAscension`, computes RA delta (×15°/hr), accumulates every tick
+5. **If tracking**: samples `Azimuth`, computes azimuth delta, accumulates every 5 ticks
 6. Logs each 360° crossing to history
-7. Saves full state to JSON every 10 ticks (every ~10 seconds)
+7. Saves full state to JSON every ~10 processed ticks
+
+### Why the Hybrid Approach
+The Seestar ALPACA driver behaves differently depending on mount state:
+
+| State | Use | Why |
+|---|---|---|
+| Slewing | `RightAscension` | Azimuth reports erratic values during slews |
+| Tracking | `Azimuth` | RA is held *constant* during tracking by definition — it never changes |
+
+When a slew ends, the azimuth baseline resets so tracking picks up cleanly from the new position. When tracking ends and a slew begins, the RA baseline resets for the same reason.
 
 ### What Gets Counted
-**All physical RA axis rotation is counted**, including:
-- Sidereal tracking (slow, ~15°/hour)
-- Slews between targets (fast, potentially hundreds of degrees)
-
-Slews are not excluded because they physically rotate the mount axis and wind the cable just as much as tracking does. The mount sometimes takes the long way around when slewing, which can add 300+ degrees in a single target change.
+- **Slews between targets** — often the dominant contribution; mount sometimes takes the long way around (300+ degrees in one slew)
+- **Sidereal tracking** — ~15°/hour; over a 6-hour night adds ~90°
 
 ### Tracking Status
 | Status | Dot colour | Meaning |
