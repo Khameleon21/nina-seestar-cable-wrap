@@ -146,7 +146,7 @@ namespace CableWrapMonitor {
                     return;
                 }
 
-                if (!info.TrackingEnabled) {
+                if (!info.TrackingEnabled && !info.Slewing) {
                     TrackingStatus    = TrackingStatus.Stopped;
                     state.LastKnownRA = null; // re-establish baseline when tracking resumes
                     return;
