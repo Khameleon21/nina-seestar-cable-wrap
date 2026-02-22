@@ -82,12 +82,5 @@ namespace CableWrapMonitor {
         [JsonProperty]
         public double WarningThresholdRotations { get; set; } = 1.0;
 
-        /// <summary>
-        /// If the RA changes by more than this many degrees in one 5-second poll cycle,
-        /// it is treated as a slew and ignored. Normal sidereal tracking produces only
-        /// about 0.1° per 5 seconds, so the default of 5° is safely above that.
-        /// </summary>
-        [JsonProperty]
-        public double SlewDetectionThresholdDegrees { get; set; } = 5.0;
     }
 }

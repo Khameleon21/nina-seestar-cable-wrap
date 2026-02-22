@@ -11,7 +11,7 @@
     <UserControl.Resources>
 
         <!--
-            Status dot colour: green when tracking, orange when a slew is being ignored,
+            Status dot colour: green when tracking,
             red when the warning threshold has been exceeded, grey when disconnected.
         -->
         <Style x:Key="StatusDotStyle" TargetType="Ellipse">
@@ -24,11 +24,7 @@
                              Value="{x:Static model:TrackingStatus.Tracking}">
                     <Setter Property="Fill" Value="#3CB371" />
                 </DataTrigger>
-                <DataTrigger Binding="{Binding Service.TrackingStatus}"
-                             Value="{x:Static model:TrackingStatus.SlewIgnored}">
-                    <Setter Property="Fill" Value="Orange" />
-                </DataTrigger>
-                <DataTrigger Binding="{Binding Service.TrackingStatus}"
+<DataTrigger Binding="{Binding Service.TrackingStatus}"
                              Value="{x:Static model:TrackingStatus.Warning}">
                     <Setter Property="Fill" Value="#FF4444" />
                 </DataTrigger>
@@ -74,11 +70,7 @@
                                                  Value="{x:Static model:TrackingStatus.Tracking}">
                                         <Setter Property="Text" Value="Tracking" />
                                     </DataTrigger>
-                                    <DataTrigger Binding="{Binding Service.TrackingStatus}"
-                                                 Value="{x:Static model:TrackingStatus.SlewIgnored}">
-                                        <Setter Property="Text" Value="Slew — ignored" />
-                                    </DataTrigger>
-                                    <DataTrigger Binding="{Binding Service.TrackingStatus}"
+<DataTrigger Binding="{Binding Service.TrackingStatus}"
                                                  Value="{x:Static model:TrackingStatus.Warning}">
                                         <Setter Property="Text" Value="⚠ WRAP WARNING" />
                                         <Setter Property="FontWeight" Value="Bold" />

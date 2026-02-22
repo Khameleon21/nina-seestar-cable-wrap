@@ -17,7 +17,6 @@ namespace CableWrapMonitor {
     public enum TrackingStatus {
         NotConnected,
         Tracking,
-        SlewIgnored,
         Warning
     }
 
@@ -159,25 +158,16 @@ namespace CableWrapMonitor {
 
                     double deltaInDegrees = delta * 15.0; // 15°/hour
 
-                    if (Math.Abs(deltaInDegrees) > settings.SlewDetectionThresholdDegrees) {
-                        // Large RA change in one tick → slew, meridian flip, or startup
-                        // transient. Log it but don't count it as cable movement.
-                        TrackingStatus = TrackingStatus.SlewIgnored;
-                        Logger.Info($"CableWrapMonitor: Slew detected " +
-                                    $"(Δ{deltaInDegrees:+0.0;-0.0}° in 5 s — ignored).");
-                        AppendHistory(state.TotalDegreesRotated,
-                            $"Slew detected — Δ{deltaInDegrees:+0.1;-0.1}° ignored");
-                    } else {
-                        // Normal sidereal tracking: accumulate the delta
-                        state.TotalDegreesRotated += deltaInDegrees;
-                        _totalDegreesRotated       = state.TotalDegreesRotated;
+                    // Count all RA movement — both sidereal tracking and slews physically
+                    // rotate the mount axis and wind the cable.
+                    state.TotalDegreesRotated += deltaInDegrees;
+                    _totalDegreesRotated       = state.TotalDegreesRotated;
 
-                        RaisePropertyChanged(nameof(TotalDegreesRotated));
-                        RaisePropertyChanged(nameof(WrapCount));
+                    RaisePropertyChanged(nameof(TotalDegreesRotated));
+                    RaisePropertyChanged(nameof(WrapCount));
 
-                        CheckForWrapCrossing();
-                        CheckForWarningThreshold();
-                    }
+                    CheckForWrapCrossing();
+                    CheckForWarningThreshold();
                 } else {
                     // First tick after connection — establish baseline, no delta yet
                     TrackingStatus = TrackingStatus.Tracking;
