@@ -24,3 +24,6 @@ Thumbs.db
 # Plugin data files (runtime state — personal to each machine)
 *.json
 !**/appsettings*.json
+
+# Private dev notes (not for publication)
+NOTES.md
