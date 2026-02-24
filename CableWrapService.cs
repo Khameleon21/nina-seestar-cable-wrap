@@ -60,6 +60,7 @@ namespace CableWrapMonitor {
         private bool              disposed           = false;
         private int               _pollTickCount     = 0;
         private int               _trackingTickCount = 0;
+        private bool              _wasAtHome         = false;
 
         // ── Observable properties (bound to the dockable panel UI) ────────────────
 
@@ -153,8 +154,16 @@ namespace CableWrapMonitor {
                 if (!info.TrackingEnabled && !info.Slewing) {
                     TrackingStatus     = TrackingStatus.Stopped;
                     _trackingTickCount = 0;
+
+                    // Scope just arrived at home — snap accumulator to nearest whole wrap
+                    if (info.AtHome && !_wasAtHome) {
+                        SnapToNearestWrap();
+                    }
+                    _wasAtHome = info.AtHome;
                     return;
                 }
+
+                _wasAtHome = false;
 
                 if (info.Slewing) {
                     // ── SLEW MODE: use RA (azimuth is unreliable during slews) ──────────
@@ -202,6 +211,33 @@ namespace CableWrapMonitor {
             } catch (Exception ex) {
                 Logger.Error($"CableWrapMonitor: Error during poll tick: {ex.Message}");
             }
+        }
+
+        // When the scope returns to home, drift has accumulated over the night.
+        // Since the cable is physically back at its starting position, the true
+        // wrap count must be a whole number. Snap to the nearest multiple of 360°.
+        private void SnapToNearestWrap() {
+            double snapped = Math.Round(state.TotalDegreesRotated / 360.0) * 360.0;
+            double drift   = state.TotalDegreesRotated - snapped;
+
+            if (Math.Abs(drift) < 1.0) return; // already clean, nothing to do
+
+            Logger.Info($"CableWrapMonitor: Home position detected. " +
+                        $"Snapping {state.TotalDegreesRotated:F1}° → {snapped:F1}° " +
+                        $"(correcting {drift:+0.1;-0.1}° of accumulated drift).");
+
+            AppendHistory(state.TotalDegreesRotated,
+                $"Home — drift corrected {drift:+0.1;-0.1}° → snapped to {snapped:F0}°");
+
+            state.TotalDegreesRotated = snapped;
+            state.LastKnownRA         = null;
+            state.LastKnownAzimuth    = null;
+            state.LastLoggedWrapCount = (int)Math.Floor(Math.Abs(snapped) / 360.0);
+
+            _totalDegreesRotated = snapped;
+            RaisePropertyChanged(nameof(TotalDegreesRotated));
+            RaisePropertyChanged(nameof(WrapCount));
+            SaveState();
         }
 
         // Adds a delta to the accumulator and updates the UI
