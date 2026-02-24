@@ -224,10 +224,10 @@ namespace CableWrapMonitor {
 
             Logger.Info($"CableWrapMonitor: Home position detected. " +
                         $"Snapping {state.TotalDegreesRotated:F1}° → {snapped:F1}° " +
-                        $"(correcting {drift:+0.1;-0.1}° of accumulated drift).");
+                        $"(correcting {drift:+0.0;-0.0}° of accumulated drift).");
 
             AppendHistory(state.TotalDegreesRotated,
-                $"Home — drift corrected {drift:+0.1;-0.1}° → snapped to {snapped:F0}°");
+                $"Home — drift corrected {drift:+0.0;-0.0}° → snapped to {snapped:F0}°");
 
             state.TotalDegreesRotated = snapped;
             state.LastKnownRA         = null;
