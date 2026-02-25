@@ -372,11 +372,11 @@ namespace CableWrapMonitor {
                 // own. We decrement it manually after each slew so the display shows
                 // the wrap count going down toward zero.
                 //
-                // Direction: for positive wrap (+N°), the azimuth axis wound in the
-                // increasing-azimuth direction during tracking. To reverse this we slew
-                // east (increase RA), which moves the azimuth axis in the decreasing
-                // direction. stepHours carries the sign of the remaining wrap so the
-                // formula works symmetrically for negative wrap too.
+                // Direction: to unwind positive wrap, we decrease RA (slew west).
+                // The poll timer originally confirmed this — in v0.2.1, the minus
+                // direction was producing negative deltas (counter going down) before
+                // the safe slew noise confused the picture. The poll timer is now
+                // suppressed, so we manually decrement after each step.
                 const int    maxSteps   = 20;
                 const double maxStepDeg = 60.0;
                 int    step      = 0;
@@ -387,7 +387,7 @@ namespace CableWrapMonitor {
 
                     double stepDeg   = Math.Sign(remaining) * Math.Min(Math.Abs(remaining), maxStepDeg);
                     double stepHours = stepDeg / 15.0;
-                    double targetRA  = ((currentRA + stepHours) % 24.0 + 24.0) % 24.0;
+                    double targetRA  = ((currentRA - stepHours) % 24.0 + 24.0) % 24.0;
 
                     progress?.Report(new ApplicationStatus {
                         Status = $"Unwinding step {step}/{maxSteps}: {remaining:+0.0;-0.0}° remaining..."
