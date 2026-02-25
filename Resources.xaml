@@ -42,6 +42,33 @@
     </GeometryGroup>
 
 
+    <!-- ── Unwind instruction icon ─────────────────────────────────────────────── -->
+    <!--
+        Counter-clockwise arc with an arrow, representing cable being unwound.
+        Same 20x20 viewport as the check icon above.
+    -->
+    <GeometryGroup x:Key="UnwindCableSequenceIcon">
+        <!-- Counter-clockwise arc: top → left → bottom → right, stopping short of start -->
+        <PathGeometry>
+            <PathGeometry.Figures>
+                <PathFigure StartPoint="10,1" IsClosed="false">
+                    <ArcSegment Point="1,10"  Size="9,9" SweepDirection="Counterclockwise" />
+                    <ArcSegment Point="10,19" Size="9,9" SweepDirection="Counterclockwise" />
+                    <ArcSegment Point="19,10" Size="9,9" SweepDirection="Counterclockwise" />
+                    <ArcSegment Point="10,3"  Size="9,9" SweepDirection="Counterclockwise" />
+                </PathFigure>
+                <!-- Arrowhead at the end of the arc (pointing left/CCW) -->
+                <PathFigure StartPoint="13,1">
+                    <LineSegment Point="10,4" />
+                    <LineSegment Point="7,1" />
+                </PathFigure>
+            </PathGeometry.Figures>
+        </PathGeometry>
+        <!-- Small square representing the USB connector -->
+        <RectangleGeometry Rect="7.5,7.5,5,5" />
+    </GeometryGroup>
+
+
     <!-- ── Dockable panel DataTemplate ────────────────────────────────────────── -->
     <!--
         NINA's docking system looks for a DataTemplate whose x:Key is the fully
@@ -53,14 +80,16 @@
     </DataTemplate>
 
 
-    <!-- ── Sequence instruction DataTemplate ──────────────────────────────────── -->
+    <!-- ── Sequence instruction DataTemplates ─────────────────────────────────── -->
     <!--
         NINA's sequencer uses the DataType of each sequence item to find its view.
-        This template tells WPF: "when you see a CheckCableWrapInstruction, render
-        it as a CheckCableWrapInstructionView".
     -->
     <DataTemplate DataType="{x:Type seq:CheckCableWrapInstruction}">
         <seq:CheckCableWrapInstructionView />
+    </DataTemplate>
+
+    <DataTemplate DataType="{x:Type seq:UnwindCableInstruction}">
+        <seq:UnwindCableInstructionView />
     </DataTemplate>
 
 </ResourceDictionary>

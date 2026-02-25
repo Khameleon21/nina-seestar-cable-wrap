@@ -2,9 +2,13 @@ using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel.Composition;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Timers;
 using System.Windows;
 using Newtonsoft.Json;
+using NINA.Astrometry;
+using NINA.Core.Model;
 using NINA.Core.Utility;
 using NINA.Equipment.Interfaces.Mediator;
 
@@ -56,11 +60,11 @@ namespace CableWrapMonitor {
 
         private CableWrapState    state;
         private CableWrapSettings settings;
-        private readonly Timer    pollTimer;
+        private readonly System.Timers.Timer pollTimer;
         private bool              disposed           = false;
         private int               _pollTickCount     = 0;
         private int               _trackingTickCount = 0;
-        private bool              _wasAtHome         = false;
+        private bool              _isUnwinding       = false;
 
         // ── Observable properties (bound to the dockable panel UI) ────────────────
 
@@ -104,6 +108,15 @@ namespace CableWrapMonitor {
         public double WarningThresholdDegrees => WarningThresholdRotations * 360.0;
 
         /// <summary>
+        /// True while an automated unwind is in progress. Used by the UI to disable
+        /// the Unwind and Reset buttons during the operation.
+        /// </summary>
+        public bool IsUnwinding {
+            get => _isUnwinding;
+            private set { _isUnwinding = value; RaisePropertyChanged(); }
+        }
+
+        /// <summary>
         /// Observable list of history entries shown in the panel's history section.
         /// Updated on the UI thread whenever a new entry is appended.
         /// </summary>
@@ -140,7 +153,7 @@ namespace CableWrapMonitor {
                 WrapHistory.Add(entry);
 
             // Start the polling timer (1 second interval, state saved every 10 ticks)
-            pollTimer           = new Timer(TimeSpan.FromSeconds(1).TotalMilliseconds);
+            pollTimer           = new System.Timers.Timer(TimeSpan.FromSeconds(1).TotalMilliseconds);
             pollTimer.Elapsed  += OnPollTick;
             pollTimer.AutoReset = true;
             pollTimer.Start();
@@ -165,16 +178,8 @@ namespace CableWrapMonitor {
                 if (!info.TrackingEnabled && !info.Slewing) {
                     TrackingStatus     = TrackingStatus.Stopped;
                     _trackingTickCount = 0;
-
-                    // Scope just arrived at home — snap accumulator to nearest whole wrap
-                    if (info.AtHome && !_wasAtHome) {
-                        SnapToNearestWrap();
-                    }
-                    _wasAtHome = info.AtHome;
                     return;
                 }
-
-                _wasAtHome = false;
 
                 if (info.Slewing) {
                     // ── SLEW MODE: use RA (azimuth is unreliable during slews) ──────────
@@ -222,33 +227,6 @@ namespace CableWrapMonitor {
             } catch (Exception ex) {
                 Logger.Error($"CableWrapMonitor: Error during poll tick: {ex.Message}");
             }
-        }
-
-        // When the scope returns to home, drift has accumulated over the night.
-        // Since the cable is physically back at its starting position, the true
-        // wrap count must be a whole number. Snap to the nearest multiple of 360°.
-        private void SnapToNearestWrap() {
-            double snapped = Math.Round(state.TotalDegreesRotated / 360.0) * 360.0;
-            double drift   = state.TotalDegreesRotated - snapped;
-
-            if (Math.Abs(drift) < 1.0) return; // already clean, nothing to do
-
-            Logger.Info($"CableWrapMonitor: Home position detected. " +
-                        $"Snapping {state.TotalDegreesRotated:F1}° → {snapped:F1}° " +
-                        $"(correcting {drift:+0.0;-0.0}° of accumulated drift).");
-
-            AppendHistory(state.TotalDegreesRotated,
-                $"Home — drift corrected {drift:+0.0;-0.0}° → snapped to {snapped:F0}°");
-
-            state.TotalDegreesRotated = snapped;
-            state.LastKnownRA         = null;
-            state.LastKnownAzimuth    = null;
-            state.LastLoggedWrapCount = (int)Math.Floor(Math.Abs(snapped) / 360.0);
-
-            _totalDegreesRotated = snapped;
-            RaisePropertyChanged(nameof(TotalDegreesRotated));
-            RaisePropertyChanged(nameof(WrapCount));
-            SaveState();
         }
 
         // Adds a delta to the accumulator and updates the UI
@@ -321,6 +299,100 @@ namespace CableWrapMonitor {
 
             TrackingStatus = TrackingStatus.Tracking;
             SaveState();
+        }
+
+        // ── Automated unwind ──────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Slews the telescope in the opposite direction of the accumulated wrap in
+        /// steps of ≤170° until the accumulator is near zero, then calls Reset().
+        ///
+        /// Each step uses a RA slew (same Dec, adjusted RA). The poll timer accumulates
+        /// the RA change during each slew, which decrements TotalDegreesRotated.
+        /// After all steps, the counter is reset to zero.
+        /// </summary>
+        public async Task UnwindAsync(IProgress<ApplicationStatus>? progress, CancellationToken token) {
+            if (_isUnwinding) return;
+            try {
+                IsUnwinding = true;
+
+                var info = telescopeMediator.GetInfo();
+                if (!info.Connected)
+                    throw new Exception("Telescope not connected — cannot auto-unwind.");
+
+                double remaining = TotalDegreesRotated;
+                if (Math.Abs(remaining) < 10.0) {
+                    // Already near zero
+                    Reset();
+                    progress?.Report(new ApplicationStatus { Status = "Cable wrap already near zero. Counter reset." });
+                    return;
+                }
+
+                Logger.Info($"CableWrapMonitor: Auto-unwind started. {remaining:+0.0;-0.0}° to unwind.");
+                AppendHistory(state.TotalDegreesRotated,
+                    $"Auto-unwind started — {remaining:+0.0;-0.0}° to unwind");
+
+                double currentRA  = info.RightAscension;
+                double currentDec = info.Declination;
+                const int maxSteps = 15;
+                int step = 0;
+
+                while (Math.Abs(remaining) >= 10.0 && step < maxSteps && !token.IsCancellationRequested) {
+                    step++;
+
+                    // Step in the opposite direction of the wind.
+                    // Positive remaining → wound CCW (+RA) → unwind CW (decrease RA).
+                    // Negative remaining → wound CW  (-RA) → unwind CCW (increase RA).
+                    double stepDeg   = Math.Sign(remaining) * Math.Min(Math.Abs(remaining), 170.0);
+                    double stepHours = stepDeg / 15.0;
+                    // Subtract stepHours from RA (for positive wind this decreases RA = clockwise = unwind).
+                    double targetRA  = ((currentRA - stepHours) % 24.0 + 24.0) % 24.0;
+
+                    progress?.Report(new ApplicationStatus {
+                        Status = $"Unwinding step {step}/{maxSteps}: {remaining:+0.0;-0.0}° remaining..."
+                    });
+
+                    Logger.Info($"CableWrapMonitor: Unwind step {step} — " +
+                                $"slewing from RA {currentRA:F3}h to RA {targetRA:F3}h " +
+                                $"(step {stepDeg:+0.0;-0.0}°, {remaining:+0.0;-0.0}° remaining).");
+
+                    var target = new Coordinates(targetRA, currentDec, Epoch.JNOW, Coordinates.RAType.Hours);
+                    bool slewOk = await telescopeMediator.SlewToCoordinatesAsync(target, token);
+
+                    if (!slewOk)
+                        throw new Exception($"Slew failed during unwind step {step}. " +
+                                            "Please check the mount and unwind manually.");
+
+                    // Brief pause so the poll timer can record the final post-slew RA
+                    await Task.Delay(2000, token);
+
+                    info       = telescopeMediator.GetInfo();
+                    currentRA  = info.RightAscension;
+                    remaining  = TotalDegreesRotated;
+                }
+
+                if (token.IsCancellationRequested) {
+                    AppendHistory(state.TotalDegreesRotated, "Auto-unwind cancelled by user");
+                    progress?.Report(new ApplicationStatus { Status = "Unwind cancelled." });
+                    return;
+                }
+
+                Logger.Info($"CableWrapMonitor: Auto-unwind complete. " +
+                            $"Residual: {remaining:+0.0;-0.0}°. Resetting counter.");
+                AppendHistory(state.TotalDegreesRotated, "Auto-unwind complete — counter reset to zero");
+                Reset();
+                progress?.Report(new ApplicationStatus { Status = "Cable unwound. Counter reset to zero." });
+
+            } catch (OperationCanceledException) {
+                AppendHistory(state.TotalDegreesRotated, "Auto-unwind cancelled");
+                progress?.Report(new ApplicationStatus { Status = "Unwind cancelled." });
+            } catch (Exception ex) {
+                Logger.Error($"CableWrapMonitor: Unwind failed: {ex.Message}");
+                progress?.Report(new ApplicationStatus { Status = $"Unwind failed: {ex.Message}" });
+                throw;
+            } finally {
+                IsUnwinding = false;
+            }
         }
 
         // ── History helper ────────────────────────────────────────────────────────

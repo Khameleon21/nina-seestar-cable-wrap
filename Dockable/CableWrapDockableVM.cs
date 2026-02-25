@@ -1,4 +1,7 @@
+using System;
 using System.ComponentModel.Composition;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using CommunityToolkit.Mvvm.Input;
@@ -31,7 +34,8 @@ namespace CableWrapMonitor.Dockable {
 
             Title = "Cable Wrap Monitor";
 
-            ResetCommand = new RelayCommand(ExecuteReset);
+            ResetCommand  = new RelayCommand(ExecuteReset);
+            UnwindCommand = new AsyncRelayCommand(ExecuteUnwindAsync);
         }
 
         /// <summary>
@@ -43,6 +47,7 @@ namespace CableWrapMonitor.Dockable {
         public override bool IsTool => true;
 
         public ICommand ResetCommand { get; }
+        public IAsyncRelayCommand UnwindCommand { get; }
 
         private void ExecuteReset() {
             var result = MessageBox.Show(
@@ -56,6 +61,21 @@ namespace CableWrapMonitor.Dockable {
 
             if (result == MessageBoxResult.Yes) {
                 Service.Reset();
+            }
+        }
+
+        private async Task ExecuteUnwindAsync() {
+            try {
+                await Service.UnwindAsync(null, CancellationToken.None);
+            } catch (OperationCanceledException) {
+                // cancelled — no message needed
+            } catch (Exception ex) {
+                MessageBox.Show(
+                    $"Auto-unwind failed:\n\n{ex.Message}\n\n" +
+                    "Please unwind the cable manually and click 'Reset — Cable Unwound'.",
+                    "Unwind Failed",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error);
             }
         }
     }

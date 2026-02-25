@@ -214,16 +214,46 @@
                     BorderThickness="0,1,0,0"
                     Margin="0,8,0,8" />
 
+            <!-- ── Unwind button ──────────────────────────────────────────── -->
+            <Button Command="{Binding UnwindCommand}"
+                    HorizontalAlignment="Stretch"
+                    Padding="8,6"
+                    FontWeight="Bold"
+                    Margin="0,0,0,4"
+                    ToolTip="Automatically slews the mount in reverse to unwind the USB cable, then resets the counter.">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Setter Property="Content" Value="Unwind Cable Automatically" />
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Service.IsUnwinding}" Value="True">
+                                <Setter Property="Content"    Value="Unwinding… (do not interrupt)" />
+                                <Setter Property="IsEnabled"  Value="False" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
+
             <!-- ── Reset button ───────────────────────────────────────────── -->
             <Button Command="{Binding ResetCommand}"
                     Content="Reset — Cable Unwound"
                     HorizontalAlignment="Stretch"
                     Padding="8,6"
                     FontWeight="Bold"
-                    ToolTip="Click only after you have physically unwound the USB cable." />
+                    ToolTip="Click only after you have physically unwound the USB cable.">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Service.IsUnwinding}" Value="True">
+                                <Setter Property="IsEnabled" Value="False" />
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
 
-            <!-- Reminder text below button -->
-            <TextBlock Text="Use this button only after physically unwinding the cable."
+            <!-- Reminder text below buttons -->
+            <TextBlock Text="'Unwind' slews the mount to unwind the cable. 'Reset' confirms manual unwind."
                        Foreground="Gray"
                        FontSize="10"
                        FontStyle="Italic"
