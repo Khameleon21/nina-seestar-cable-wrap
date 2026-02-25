@@ -16,44 +16,30 @@
 
     <!-- ── Sequence instruction icon ──────────────────────────────────────────── -->
     <!--
-        A simple "USB plug + rotation arrow" icon for the Check Cable Wrap instruction
-        in the sequencer list. The key must match the ExportMetadata("Icon", ...) value
-        in CheckCableWrapInstruction.cs.
+        NINA requires the Icon resource to be a GeometryGroup (not DrawingImage).
+        It is cast to GeometryGroup in PluginLoader.AssignSequenceEntity().
+        NINA applies its own fill/stroke from the current theme.
     -->
-    <DrawingImage x:Key="CableWrapSequenceIcon">
-        <DrawingImage.Drawing>
-            <DrawingGroup>
-                <!-- Outer circle (cable loop) -->
-                <GeometryDrawing Brush="{DynamicResource ButtonForegroundBrush}">
-                    <GeometryDrawing.Geometry>
-                        <PathGeometry>
-                            <PathFigure StartPoint="10,1" IsClosed="false">
-                                <!-- Arc: top → right → bottom → left, stopping short of start -->
-                                <ArcSegment Point="19,10" Size="9,9" SweepDirection="Clockwise" />
-                                <ArcSegment Point="10,19" Size="9,9" SweepDirection="Clockwise" />
-                                <ArcSegment Point="1,10"  Size="9,9" SweepDirection="Clockwise" />
-                                <ArcSegment Point="10,3"  Size="9,9" SweepDirection="Clockwise" />
-                            </PathFigure>
-                            <!-- Arrow head at the end of the arc -->
-                            <PathFigure StartPoint="7,1">
-                                <LineSegment Point="10,4" />
-                                <LineSegment Point="13,1" />
-                            </PathFigure>
-                        </PathGeometry>
-                    </GeometryDrawing.Geometry>
-                    <GeometryDrawing.Pen>
-                        <Pen Brush="{DynamicResource ButtonForegroundBrush}" Thickness="1.8" />
-                    </GeometryDrawing.Pen>
-                </GeometryDrawing>
-                <!-- USB connector rectangle in the middle -->
-                <GeometryDrawing Brush="{DynamicResource ButtonForegroundBrush}">
-                    <GeometryDrawing.Geometry>
-                        <RectangleGeometry Rect="7.5,7.5,5,5" RadiusX="0.5" RadiusY="0.5" />
-                    </GeometryDrawing.Geometry>
-                </GeometryDrawing>
-            </DrawingGroup>
-        </DrawingImage.Drawing>
-    </DrawingImage>
+    <GeometryGroup x:Key="CableWrapSequenceIcon">
+        <!-- Circular arc: top → right → bottom → left, stopping short of start -->
+        <PathGeometry>
+            <PathGeometry.Figures>
+                <PathFigure StartPoint="10,1" IsClosed="false">
+                    <ArcSegment Point="19,10" Size="9,9" SweepDirection="Clockwise" />
+                    <ArcSegment Point="10,19" Size="9,9" SweepDirection="Clockwise" />
+                    <ArcSegment Point="1,10"  Size="9,9" SweepDirection="Clockwise" />
+                    <ArcSegment Point="10,3"  Size="9,9" SweepDirection="Clockwise" />
+                </PathFigure>
+                <!-- Arrowhead at the end of the arc -->
+                <PathFigure StartPoint="7,1">
+                    <LineSegment Point="10,4" />
+                    <LineSegment Point="13,1" />
+                </PathFigure>
+            </PathGeometry.Figures>
+        </PathGeometry>
+        <!-- Small square representing the USB connector -->
+        <RectangleGeometry Rect="7.5,7.5,5,5" />
+    </GeometryGroup>
 
 
     <!-- ── Dockable panel DataTemplate ────────────────────────────────────────── -->
