@@ -166,6 +166,10 @@ namespace CableWrapMonitor {
 
         private void OnPollTick(object? sender, ElapsedEventArgs e) {
             try {
+                // Do not accumulate while an automated unwind is in progress —
+                // the unwind routine manages the counter manually.
+                if (_isUnwinding) return;
+
                 var info = telescopeMediator.GetInfo();
 
                 if (!info.Connected) {
@@ -306,74 +310,81 @@ namespace CableWrapMonitor {
         /// <summary>
         /// Unwinds the USB cable by:
         ///   1. Slewing straight up to a safe high-altitude position (near north celestial
-        ///      pole) so that no subsequent RA slew can point below the horizon.
-        ///   2. Stepping RA in the opposite direction of the wind in ≤60° increments until
-        ///      the accumulator is within 10° of zero.
-        ///   3. Sending the scope home (FindHome) to land on a clean mechanical zero.
+        ///      pole) so that no subsequent RA slew can go below the horizon.
+        ///   2. Stepping RA in ≤60° increments to physically rotate the azimuth axis
+        ///      backward. The poll timer is suppressed during this time (_isUnwinding=true)
+        ///      and the counter is decremented manually after each step so the UI shows
+        ///      the number going down.
+        ///   3. Sending the scope home to land on a clean mechanical zero.
         ///   4. Resetting the accumulator to zero.
         /// </summary>
         public async Task UnwindAsync(IProgress<ApplicationStatus>? progress, CancellationToken token) {
             if (_isUnwinding) return;
             try {
+                // Set _isUnwinding = true BEFORE any slews so that OnPollTick skips
+                // accumulation for the entire operation — otherwise the poll timer
+                // fights the unwind and the counter keeps climbing.
                 IsUnwinding = true;
 
                 var info = telescopeMediator.GetInfo();
                 if (!info.Connected)
                     throw new Exception("Telescope not connected — cannot auto-unwind.");
 
-                double remaining = TotalDegreesRotated;
-                if (Math.Abs(remaining) < 10.0) {
+                // Snapshot the total before we do anything. We will manually decrement
+                // this value after each step so the UI reflects progress.
+                double startTotal = TotalDegreesRotated;
+                if (Math.Abs(startTotal) < 10.0) {
                     Reset();
                     progress?.Report(new ApplicationStatus { Status = "Cable wrap already near zero. Counter reset." });
                     return;
                 }
 
-                Logger.Info($"CableWrapMonitor: Auto-unwind started. {remaining:+0.0;-0.0}° to unwind.");
+                Logger.Info($"CableWrapMonitor: Auto-unwind started. {startTotal:+0.0;-0.0}° to unwind.");
                 AppendHistory(state.TotalDegreesRotated,
-                    $"Auto-unwind started — {remaining:+0.0;-0.0}° to unwind");
+                    $"Auto-unwind started — {startTotal:+0.0;-0.0}° to unwind");
 
                 // ── Step 1: Slew straight up to a safe starting position ───────────
-                // Pointing near Dec=80° (close to the north celestial pole) keeps the
-                // scope at high altitude for every RA value we'll visit during the
-                // unwind loop, so we can never hit "below horizon".
-                // Using SiderealTime as the RA puts us on the meridian (peak altitude).
+                // Pointing near Dec=80° keeps the scope well above the horizon for
+                // every RA value we visit in the loop. SiderealTime as the RA puts us
+                // on the meridian (highest altitude for that declination).
                 progress?.Report(new ApplicationStatus {
                     Status = "Pointing straight up to safe position before unwinding..."
                 });
 
-                double safeRA  = info.SiderealTime; // meridian = maximum altitude
-                double safeDec = 80.0;              // near pole, circumpolar everywhere
-
-                Logger.Info($"CableWrapMonitor: Slewing to safe position " +
-                            $"RA {safeRA:F2}h Dec {safeDec:F0}° before unwind.");
+                double safeRA  = info.SiderealTime;
+                double safeDec = 80.0;
+                Logger.Info($"CableWrapMonitor: Slewing to safe position RA {safeRA:F2}h Dec {safeDec:F0}°.");
 
                 var safeTarget = new Coordinates(safeRA, safeDec, Epoch.JNOW, Coordinates.RAType.Hours);
                 bool safeOk = await telescopeMediator.SlewToCoordinatesAsync(safeTarget, token);
                 if (!safeOk)
                     throw new Exception(
                         "Could not slew to safe starting position (RA=LST, Dec=80°). " +
-                        "Make sure the telescope is connected and the mount limits allow pointing north.");
+                        "Check the mount is connected and can point north.");
 
                 await Task.Delay(2000, token);
                 info = telescopeMediator.GetInfo();
                 double currentRA  = info.RightAscension;
-                double currentDec = info.Declination; // should be ≈80°
-                remaining = TotalDegreesRotated;
+                double currentDec = info.Declination;
 
                 // ── Step 2: Unwind loop ────────────────────────────────────────────
-                // At Dec≈80°, all RA positions are circumpolar and well above the
-                // horizon, so slews of up to 60° of RA are always safe.
-                const int    maxSteps  = 20;
-                const double maxStepDeg = 60.0; // safe step size at high declination
-                int step = 0;
+                // The poll timer is suppressed, so the counter will NOT change on its
+                // own. We decrement it manually after each slew so the display shows
+                // the wrap count going down toward zero.
+                //
+                // Direction: for positive wrap (+N°), the azimuth axis wound in the
+                // increasing-azimuth direction during tracking. To reverse this we slew
+                // east (increase RA), which moves the azimuth axis in the decreasing
+                // direction. stepHours carries the sign of the remaining wrap so the
+                // formula works symmetrically for negative wrap too.
+                const int    maxSteps   = 20;
+                const double maxStepDeg = 60.0;
+                int    step      = 0;
+                double remaining = startTotal;
 
                 while (Math.Abs(remaining) >= 10.0 && step < maxSteps && !token.IsCancellationRequested) {
                     step++;
 
-                    // On the Seestar (alt-az mount), increasing RA causes the azimuth
-                    // axis to rotate in the direction that unwinds positive wrap, and
-                    // decreasing RA unwinds negative wrap.  stepHours carries the sign
-                    // of remaining, so adding it moves RA in the correct direction.
                     double stepDeg   = Math.Sign(remaining) * Math.Min(Math.Abs(remaining), maxStepDeg);
                     double stepHours = stepDeg / 15.0;
                     double targetRA  = ((currentRA + stepHours) % 24.0 + 24.0) % 24.0;
@@ -381,22 +392,25 @@ namespace CableWrapMonitor {
                     progress?.Report(new ApplicationStatus {
                         Status = $"Unwinding step {step}/{maxSteps}: {remaining:+0.0;-0.0}° remaining..."
                     });
-
                     Logger.Info($"CableWrapMonitor: Unwind step {step} — " +
                                 $"RA {currentRA:F3}h → {targetRA:F3}h " +
-                                $"(step {stepDeg:+0.0;-0.0}°, {remaining:+0.0;-0.0}° remaining).");
+                                $"({stepDeg:+0.0;-0.0}°, {remaining:+0.0;-0.0}° remaining).");
 
                     var target = new Coordinates(targetRA, currentDec, Epoch.JNOW, Coordinates.RAType.Hours);
                     bool slewOk = await telescopeMediator.SlewToCoordinatesAsync(target, token);
                     if (!slewOk)
-                        throw new Exception(
-                            $"Slew failed during unwind step {step}. " +
-                            "Please check the mount and try again.");
+                        throw new Exception($"Slew failed during unwind step {step}. Please check the mount.");
 
                     await Task.Delay(2000, token);
                     info      = telescopeMediator.GetInfo();
                     currentRA = info.RightAscension;
-                    remaining = TotalDegreesRotated;
+
+                    // Manually decrement the counter so the UI shows progress.
+                    remaining -= stepDeg;
+                    state.TotalDegreesRotated = remaining;
+                    _totalDegreesRotated      = remaining;
+                    RaisePropertyChanged(nameof(TotalDegreesRotated));
+                    RaisePropertyChanged(nameof(WrapCount));
                 }
 
                 if (token.IsCancellationRequested) {
@@ -405,12 +419,11 @@ namespace CableWrapMonitor {
                     return;
                 }
 
-                // ── Step 3: Home the scope to land on a clean mechanical zero ──────
+                // ── Step 3: Home the scope ─────────────────────────────────────────
                 progress?.Report(new ApplicationStatus {
-                    Status = $"Unwind steps done ({remaining:+0.0;-0.0}° residual) — homing scope..."
+                    Status = $"Unwind steps done — homing scope to finish..."
                 });
-                Logger.Info($"CableWrapMonitor: Unwind steps complete (residual {remaining:+0.0;-0.0}°). " +
-                            "Sending scope home.");
+                Logger.Info("CableWrapMonitor: Unwind steps complete. Sending scope home.");
 
                 await telescopeMediator.FindHome(progress, token);
                 await Task.Delay(2000, token);
