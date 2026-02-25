@@ -25,7 +25,7 @@ namespace CableWrapMonitor.SequenceItems {
     [ExportMetadata("Description", "Fails the sequence if the Seestar USB cable has " +
                                    "wound beyond the configured warning threshold.")]
     [ExportMetadata("Icon",        "CableWrapSequenceIcon")]
-    [ExportMetadata("Category",    "Equipment")]
+    [ExportMetadata("Category",    "Lbl_SequenceCategory_Telescope")]
     public class CheckCableWrapInstruction : SequenceItem {
 
         private readonly CableWrapService service;
