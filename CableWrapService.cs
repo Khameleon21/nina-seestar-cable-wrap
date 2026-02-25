@@ -362,7 +362,7 @@ namespace CableWrapMonitor {
                         "Could not slew to safe starting position (RA=LST, Dec=80°). " +
                         "Check the mount is connected and can point north.");
 
-                await Task.Delay(2000, token);
+                await Task.Delay(500, token);
                 info = telescopeMediator.GetInfo();
                 double currentRA  = info.RightAscension;
                 double currentDec = info.Declination;
@@ -401,7 +401,7 @@ namespace CableWrapMonitor {
                     if (!slewOk)
                         throw new Exception($"Slew failed during unwind step {step}. Please check the mount.");
 
-                    await Task.Delay(2000, token);
+                    await Task.Delay(500, token);
                     info      = telescopeMediator.GetInfo();
                     currentRA = info.RightAscension;
 
@@ -426,7 +426,7 @@ namespace CableWrapMonitor {
                 Logger.Info("CableWrapMonitor: Unwind steps complete. Sending scope home.");
 
                 await telescopeMediator.FindHome(progress, token);
-                await Task.Delay(2000, token);
+                await Task.Delay(500, token);
 
                 // ── Step 4: Reset counter ──────────────────────────────────────────
                 Logger.Info("CableWrapMonitor: Auto-unwind complete. Resetting counter.");
