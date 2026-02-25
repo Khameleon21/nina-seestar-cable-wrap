@@ -3,9 +3,11 @@ using System.Collections.Generic;
 using System.ComponentModel.Composition;
 using System.Threading;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 using NINA.Core.Model;
 using NINA.Core.Utility;   // Logger
 using NINA.Sequencer.SequenceItem;
+using NINA.Sequencer.Validations;
 
 namespace CableWrapMonitor.SequenceItems {
 
@@ -25,8 +27,9 @@ namespace CableWrapMonitor.SequenceItems {
     [ExportMetadata("Description", "Fails the sequence if the Seestar USB cable has " +
                                    "wound beyond the configured warning threshold.")]
     [ExportMetadata("Icon",        "CableWrapSequenceIcon")]
-    [ExportMetadata("Category",    "Lbl_SequenceCategory_Telescope")]
-    public class CheckCableWrapInstruction : SequenceItem {
+    [ExportMetadata("Category",    "Cable Wrap Monitor")]
+    [JsonObject(MemberSerialization.OptIn)]
+    public class CheckCableWrapInstruction : SequenceItem, IValidatable {
 
         private readonly CableWrapService service;
 
@@ -104,22 +107,28 @@ namespace CableWrapMonitor.SequenceItems {
             });
         }
 
-        // ── Validation ────────────────────────────────────────────────────────────
+        // ── Validation (IValidatable) ─────────────────────────────────────────────
 
         /// <summary>
         /// Validate is called by NINA before the sequence runs.
-        /// We report a warning in the sequencer UI if the telescope is not connected,
-        /// so the user can see the check will be skipped.
+        /// Returning true always allows the sequence to run; Execute() handles the real logic.
         /// </summary>
         public bool Validate() {
             var issues = new List<string>();
 
             if (service.TrackingStatus == TrackingStatus.NotConnected) {
-                issues.Add("Telescope not connected — cable wrap cannot be checked.");
+                issues.Add("Telescope not connected — cable wrap check will be skipped.");
+            }
+
+            if (issues != Issues) {
+                Issues = issues;
+                RaisePropertyChanged(nameof(Issues));
             }
 
             return true; // Always allow the sequence to run; Execute() handles the real logic.
         }
+
+        public IList<string> Issues { get; set; } = new List<string>();
     }
 }
 
