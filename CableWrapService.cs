@@ -304,12 +304,13 @@ namespace CableWrapMonitor {
         // ── Automated unwind ──────────────────────────────────────────────────────
 
         /// <summary>
-        /// Slews the telescope in the opposite direction of the accumulated wrap in
-        /// steps of ≤170° until the accumulator is near zero, then calls Reset().
-        ///
-        /// Each step uses a RA slew (same Dec, adjusted RA). The poll timer accumulates
-        /// the RA change during each slew, which decrements TotalDegreesRotated.
-        /// After all steps, the counter is reset to zero.
+        /// Unwinds the USB cable by:
+        ///   1. Slewing straight up to a safe high-altitude position (near north celestial
+        ///      pole) so that no subsequent RA slew can point below the horizon.
+        ///   2. Stepping RA in the opposite direction of the wind in ≤60° increments until
+        ///      the accumulator is within 10° of zero.
+        ///   3. Sending the scope home (FindHome) to land on a clean mechanical zero.
+        ///   4. Resetting the accumulator to zero.
         /// </summary>
         public async Task UnwindAsync(IProgress<ApplicationStatus>? progress, CancellationToken token) {
             if (_isUnwinding) return;
@@ -322,7 +323,6 @@ namespace CableWrapMonitor {
 
                 double remaining = TotalDegreesRotated;
                 if (Math.Abs(remaining) < 10.0) {
-                    // Already near zero
                     Reset();
                     progress?.Report(new ApplicationStatus { Status = "Cable wrap already near zero. Counter reset." });
                     return;
@@ -332,20 +332,49 @@ namespace CableWrapMonitor {
                 AppendHistory(state.TotalDegreesRotated,
                     $"Auto-unwind started — {remaining:+0.0;-0.0}° to unwind");
 
+                // ── Step 1: Slew straight up to a safe starting position ───────────
+                // Pointing near Dec=80° (close to the north celestial pole) keeps the
+                // scope at high altitude for every RA value we'll visit during the
+                // unwind loop, so we can never hit "below horizon".
+                // Using SiderealTime as the RA puts us on the meridian (peak altitude).
+                progress?.Report(new ApplicationStatus {
+                    Status = "Pointing straight up to safe position before unwinding..."
+                });
+
+                double safeRA  = info.SiderealTime; // meridian = maximum altitude
+                double safeDec = 80.0;              // near pole, circumpolar everywhere
+
+                Logger.Info($"CableWrapMonitor: Slewing to safe position " +
+                            $"RA {safeRA:F2}h Dec {safeDec:F0}° before unwind.");
+
+                var safeTarget = new Coordinates(safeRA, safeDec, Epoch.JNOW, Coordinates.RAType.Hours);
+                bool safeOk = await telescopeMediator.SlewToCoordinatesAsync(safeTarget, token);
+                if (!safeOk)
+                    throw new Exception(
+                        "Could not slew to safe starting position (RA=LST, Dec=80°). " +
+                        "Make sure the telescope is connected and the mount limits allow pointing north.");
+
+                await Task.Delay(2000, token);
+                info = telescopeMediator.GetInfo();
                 double currentRA  = info.RightAscension;
-                double currentDec = info.Declination;
-                const int maxSteps = 15;
+                double currentDec = info.Declination; // should be ≈80°
+                remaining = TotalDegreesRotated;
+
+                // ── Step 2: Unwind loop ────────────────────────────────────────────
+                // At Dec≈80°, all RA positions are circumpolar and well above the
+                // horizon, so slews of up to 60° of RA are always safe.
+                const int    maxSteps  = 20;
+                const double maxStepDeg = 60.0; // safe step size at high declination
                 int step = 0;
 
                 while (Math.Abs(remaining) >= 10.0 && step < maxSteps && !token.IsCancellationRequested) {
                     step++;
 
-                    // Step in the opposite direction of the wind.
-                    // Positive remaining → wound CCW (+RA) → unwind CW (decrease RA).
-                    // Negative remaining → wound CW  (-RA) → unwind CCW (increase RA).
-                    double stepDeg   = Math.Sign(remaining) * Math.Min(Math.Abs(remaining), 170.0);
+                    // Step RA opposite to the direction of winding.
+                    // Positive remaining → wound CCW → unwind by decreasing RA.
+                    // Negative remaining → wound CW  → unwind by increasing RA.
+                    double stepDeg   = Math.Sign(remaining) * Math.Min(Math.Abs(remaining), maxStepDeg);
                     double stepHours = stepDeg / 15.0;
-                    // Subtract stepHours from RA (for positive wind this decreases RA = clockwise = unwind).
                     double targetRA  = ((currentRA - stepHours) % 24.0 + 24.0) % 24.0;
 
                     progress?.Report(new ApplicationStatus {
@@ -353,22 +382,20 @@ namespace CableWrapMonitor {
                     });
 
                     Logger.Info($"CableWrapMonitor: Unwind step {step} — " +
-                                $"slewing from RA {currentRA:F3}h to RA {targetRA:F3}h " +
+                                $"RA {currentRA:F3}h → {targetRA:F3}h " +
                                 $"(step {stepDeg:+0.0;-0.0}°, {remaining:+0.0;-0.0}° remaining).");
 
                     var target = new Coordinates(targetRA, currentDec, Epoch.JNOW, Coordinates.RAType.Hours);
                     bool slewOk = await telescopeMediator.SlewToCoordinatesAsync(target, token);
-
                     if (!slewOk)
-                        throw new Exception($"Slew failed during unwind step {step}. " +
-                                            "Please check the mount and unwind manually.");
+                        throw new Exception(
+                            $"Slew failed during unwind step {step}. " +
+                            "Please check the mount and try again.");
 
-                    // Brief pause so the poll timer can record the final post-slew RA
                     await Task.Delay(2000, token);
-
-                    info       = telescopeMediator.GetInfo();
-                    currentRA  = info.RightAscension;
-                    remaining  = TotalDegreesRotated;
+                    info      = telescopeMediator.GetInfo();
+                    currentRA = info.RightAscension;
+                    remaining = TotalDegreesRotated;
                 }
 
                 if (token.IsCancellationRequested) {
@@ -377,11 +404,23 @@ namespace CableWrapMonitor {
                     return;
                 }
 
-                Logger.Info($"CableWrapMonitor: Auto-unwind complete. " +
-                            $"Residual: {remaining:+0.0;-0.0}°. Resetting counter.");
-                AppendHistory(state.TotalDegreesRotated, "Auto-unwind complete — counter reset to zero");
+                // ── Step 3: Home the scope to land on a clean mechanical zero ──────
+                progress?.Report(new ApplicationStatus {
+                    Status = $"Unwind steps done ({remaining:+0.0;-0.0}° residual) — homing scope..."
+                });
+                Logger.Info($"CableWrapMonitor: Unwind steps complete (residual {remaining:+0.0;-0.0}°). " +
+                            "Sending scope home.");
+
+                await telescopeMediator.FindHome(progress, token);
+                await Task.Delay(2000, token);
+
+                // ── Step 4: Reset counter ──────────────────────────────────────────
+                Logger.Info("CableWrapMonitor: Auto-unwind complete. Resetting counter.");
+                AppendHistory(state.TotalDegreesRotated, "Auto-unwind complete — scope homed, counter reset");
                 Reset();
-                progress?.Report(new ApplicationStatus { Status = "Cable unwound. Counter reset to zero." });
+                progress?.Report(new ApplicationStatus {
+                    Status = "Cable unwound. Scope homed. Counter reset to zero."
+                });
 
             } catch (OperationCanceledException) {
                 AppendHistory(state.TotalDegreesRotated, "Auto-unwind cancelled");
