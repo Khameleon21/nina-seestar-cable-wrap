@@ -370,12 +370,13 @@ namespace CableWrapMonitor {
                 while (Math.Abs(remaining) >= 10.0 && step < maxSteps && !token.IsCancellationRequested) {
                     step++;
 
-                    // Step RA opposite to the direction of winding.
-                    // Positive remaining → wound CCW → unwind by decreasing RA.
-                    // Negative remaining → wound CW  → unwind by increasing RA.
+                    // On the Seestar (alt-az mount), increasing RA causes the azimuth
+                    // axis to rotate in the direction that unwinds positive wrap, and
+                    // decreasing RA unwinds negative wrap.  stepHours carries the sign
+                    // of remaining, so adding it moves RA in the correct direction.
                     double stepDeg   = Math.Sign(remaining) * Math.Min(Math.Abs(remaining), maxStepDeg);
                     double stepHours = stepDeg / 15.0;
-                    double targetRA  = ((currentRA - stepHours) % 24.0 + 24.0) % 24.0;
+                    double targetRA  = ((currentRA + stepHours) % 24.0 + 24.0) % 24.0;
 
                     progress?.Report(new ApplicationStatus {
                         Status = $"Unwinding step {step}/{maxSteps}: {remaining:+0.0;-0.0}° remaining..."
