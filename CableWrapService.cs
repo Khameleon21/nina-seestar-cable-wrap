@@ -110,11 +110,22 @@ namespace CableWrapMonitor {
         public ObservableCollection<WrapHistoryEntry> WrapHistory { get; }
             = new ObservableCollection<WrapHistoryEntry>();
 
+        // ── Static singleton (used by CheckCableWrapInstruction to avoid MEF issues) ──
+
+        /// <summary>
+        /// Set when the service is constructed by MEF. Sequence items access the
+        /// service through this property rather than via MEF injection, because NINA
+        /// may compose sequence items in a context where plugin-internal exports are
+        /// not available.
+        /// </summary>
+        public static CableWrapService? Instance { get; private set; }
+
         // ── Constructor ───────────────────────────────────────────────────────────
 
         [ImportingConstructor]
         public CableWrapService(ITelescopeMediator telescopeMediator) {
             this.telescopeMediator = telescopeMediator;
+            Instance = this;
 
             Directory.CreateDirectory(DataDirectory);
 
