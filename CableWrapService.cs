@@ -66,6 +66,7 @@ namespace CableWrapMonitor {
         private int               _trackingTickCount = 0;
         private bool              _isUnwinding       = false;
         private bool              _wasAtHome         = false;
+        private bool              _slewInProgress    = false;
         private string            _lastBranch        = "";   // transition detection
         private readonly object   _logLock           = new object();
         private string            _logDate           = "";
@@ -189,83 +190,92 @@ namespace CableWrapMonitor {
                     state.LastKnownRA      = null;
                     state.LastKnownAzimuth = null;
                     _wasAtHome             = false;
+                    _slewInProgress        = false;
                     return;
                 }
 
                 if (info.Slewing) {
-                    // ── SLEW MODE: use RA (azimuth is unreliable during slews) ──────────
-                    // Reset azimuth baseline so tracking picks up cleanly after the slew.
-                    _wasAtHome             = false;
-                    _trackingTickCount     = 0;
-                    state.LastKnownAzimuth = null;
+                    // ── SLEW MODE ────────────────────────────────────────────────────────
+                    // Azimuth is unreliable mid-slew (-440° errors observed).
+                    // Instead: capture the pre-slew azimuth from the last stationary
+                    // sample, then compute the true azimuth delta when the slew ends.
+                    // No accumulation happens during the slew itself.
+                    _wasAtHome = false;
 
-                    if (_lastBranch != "SLEW") {
-                        CwmLog("[→SLEW] Slew started.");
+                    if (!_slewInProgress) {
+                        _slewInProgress = true;
+                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}°");
                         _lastBranch = "SLEW";
                     }
-
-                    double currentRA = info.RightAscension; // hours, 0.0 – 24.0
-                    if (state.LastKnownRA.HasValue) {
-                        double delta    = currentRA - state.LastKnownRA.Value;
-                        if (delta >  12.0) delta -= 24.0;
-                        if (delta < -12.0) delta += 24.0;
-                        double deltaDeg = delta * 15.0;
-                        Accumulate(deltaDeg);
-                        CwmLog($"[SLEW] RA delta={deltaDeg:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
-                    } else {
-                        CwmLog($"[SLEW] Baseline set. RA={currentRA:F3}h");
-                        TrackingStatus = TrackingStatus.Tracking;
-                    }
-                    state.LastKnownRA = currentRA;
-
-                } else if (info.TrackingEnabled) {
-                    // ── TRACKING MODE: use Azimuth (RA is held constant during tracking) ─
-                    // Reset RA baseline so the next slew picks up cleanly.
-                    _wasAtHome        = false;
-                    state.LastKnownRA = null;
-
-                    if (_lastBranch != "TRACK") {
-                        CwmLog("[→TRACK] Sidereal tracking started.");
-                        _lastBranch = "TRACK";
-                    }
-
-                    _trackingTickCount++;
-                    if (_trackingTickCount < 5) return; // sample every 5 seconds
-                    _trackingTickCount = 0;
-
-                    double currentAzimuth = info.Azimuth; // degrees, 0.0 – 360.0
-                    if (state.LastKnownAzimuth.HasValue) {
-                        double delta = currentAzimuth - state.LastKnownAzimuth.Value;
-                        if (delta >  180.0) delta -= 360.0;
-                        if (delta < -180.0) delta += 360.0;
-                        Accumulate(delta);
-                        CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
-                    } else {
-                        CwmLog($"[TRACK] Baseline set. Az={currentAzimuth:F2}°");
-                        TrackingStatus = TrackingStatus.Tracking;
-                    }
-                    state.LastKnownAzimuth = currentAzimuth;
+                    TrackingStatus = TrackingStatus.Tracking;
 
                 } else {
-                    // ── STOPPED ───────────────────────────────────────────────────────────
-                    // Not tracking and not slewing. The AZ branch above handles motion
-                    // while TrackingEnabled=true — including FindHome on the Seestar, which
-                    // keeps tracking on during the return. The snap fires here, inside the
-                    // stopped block, so the AZ branch has had time to count the full return
-                    // motion before we correct any small residual drift.
-                    state.LastKnownRA  = null;
-                    TrackingStatus     = TrackingStatus.Stopped;
-                    _trackingTickCount = 0;
+                    // ── Slew just ended — accumulate the true azimuth delta ───────────────
+                    if (_slewInProgress) {
+                        _slewInProgress    = false;
+                        _trackingTickCount = 0;
+                        _lastBranch        = ""; // reset so transition logs fire below
 
-                    if (_lastBranch != "STOP") {
-                        CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome}  total={TotalDegreesRotated:+0.0;-0.0}°");
-                        _lastBranch = "STOP";
+                        double postSlewAz = info.Azimuth;
+                        if (state.LastKnownAzimuth.HasValue) {
+                            double delta = postSlewAz - state.LastKnownAzimuth.Value;
+                            if (delta >  180.0) delta -= 360.0;
+                            if (delta < -180.0) delta += 360.0;
+                            Accumulate(delta);
+                            CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
+                                   $"delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
+                        } else {
+                            CwmLog($"[SLEW-END] No pre-slew Az baseline — skipping. Post-slew Az={postSlewAz:F2}°");
+                        }
+                        state.LastKnownAzimuth = postSlewAz;
                     }
 
-                    if (info.AtHome && !_wasAtHome)
-                        SnapToHomePosition();
-                    _wasAtHome = info.AtHome;
-                    return;
+                    if (info.TrackingEnabled) {
+                        // ── TRACKING MODE: Azimuth (RA constant during sidereal tracking) ──
+                        _wasAtHome        = false;
+                        state.LastKnownRA = null;
+
+                        if (_lastBranch != "TRACK") {
+                            CwmLog("[→TRACK] Sidereal tracking started.");
+                            _lastBranch = "TRACK";
+                        }
+
+                        _trackingTickCount++;
+                        if (_trackingTickCount < 5) return; // sample every 5 seconds
+                        _trackingTickCount = 0;
+
+                        double currentAzimuth = info.Azimuth;
+                        if (state.LastKnownAzimuth.HasValue) {
+                            double delta = currentAzimuth - state.LastKnownAzimuth.Value;
+                            if (delta >  180.0) delta -= 360.0;
+                            if (delta < -180.0) delta += 360.0;
+                            Accumulate(delta);
+                            CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
+                        } else {
+                            CwmLog($"[TRACK] Baseline set. Az={currentAzimuth:F2}°");
+                            TrackingStatus = TrackingStatus.Tracking;
+                        }
+                        state.LastKnownAzimuth = currentAzimuth;
+
+                    } else {
+                        // ── STOPPED ───────────────────────────────────────────────────────
+                        // Not tracking, not slewing. Keep azimuth fresh so the next slew
+                        // has an accurate pre-slew baseline. Snap fires here after FindHome.
+                        state.LastKnownRA      = null;
+                        state.LastKnownAzimuth = info.Azimuth; // keep baseline current
+                        TrackingStatus         = TrackingStatus.Stopped;
+                        _trackingTickCount     = 0;
+
+                        if (_lastBranch != "STOP") {
+                            CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome}  total={TotalDegreesRotated:+0.0;-0.0}°");
+                            _lastBranch = "STOP";
+                        }
+
+                        if (info.AtHome && !_wasAtHome)
+                            SnapToHomePosition();
+                        _wasAtHome = info.AtHome;
+                        return;
+                    }
                 }
 
                 // Save to disk every 10 seconds rather than every tick
