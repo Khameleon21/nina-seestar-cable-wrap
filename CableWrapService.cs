@@ -68,9 +68,11 @@ namespace CableWrapMonitor {
         private bool              _isUnwinding       = false;
         private bool              _wasAtHome         = false;
         private bool              _slewInProgress    = false;
-        private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown
+        private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown — used for MovementIndicator label only
         private double            _preSlewRA         = 0;   // RA at slew start, for direction detection
         private double            _preSlewTotal      = 0;   // TotalDegreesRotated at slew start, for live display
+        private double            _slewLiveAzAccum   = 0;   // cumulative Az delta during current slew (tick-by-tick sum)
+        private double            _prevSlewAz        = double.NaN; // computed Az at previous slew tick
         private bool              _isMoving          = false;
         private string            _movementIndicator = "";
         private int               _atHomeSettleTicks = 0;   // ticks to wait after AtHome before snap
@@ -217,6 +219,8 @@ namespace CableWrapMonitor {
                     _wasAtHome             = false;
                     _slewInProgress        = false;
                     _slewDirectionSign     = 0;
+                    _slewLiveAzAccum       = 0.0;
+                    _prevSlewAz            = double.NaN;
                     _atHomeSettleTicks     = 0;
                     IsMoving               = false;
                     MovementIndicator      = "";
@@ -237,6 +241,12 @@ namespace CableWrapMonitor {
                         _slewDirectionSign = 0;
                         _preSlewRA         = info.RightAscension;
                         _preSlewTotal      = state.TotalDegreesRotated;
+                        _slewLiveAzAccum   = 0.0;
+                        // Seed the incremental accumulator from the last known stationary Az.
+                        // Using computed Az here so the first tick delta is clean.
+                        _prevSlewAz        = state.LastKnownAzimuth.HasValue
+                                             ? state.LastKnownAzimuth.Value
+                                             : GetComputedAzimuth(info);
                         CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}° RA={_preSlewRA:F3}h");
                         _lastBranch = "SLEW";
                     }
@@ -257,14 +267,21 @@ namespace CableWrapMonitor {
                         }
                     }
 
-                    // Live display update — computed Az is stable during slews so we can
-                    // show running total each tick once direction is confirmed.
-                    if (_slewDirectionSign != 0 && state.LastKnownAzimuth.HasValue) {
-                        double liveAz    = GetComputedAzimuth(info);
-                        double liveDelta = liveAz - state.LastKnownAzimuth.Value;
-                        if (liveDelta >  180.0) liveDelta -= 360.0;
-                        if (liveDelta < -180.0) liveDelta += 360.0;
-                        _totalDegreesRotated = _preSlewTotal + Math.Abs(liveDelta) * _slewDirectionSign;
+                    // Incremental Az accumulation for live display.
+                    // Accumulate small per-tick deltas rather than recomputing from the
+                    // pre-slew baseline each tick. This avoids the ±180° wraparound glitch
+                    // that occurs when the scope crosses Az=180° (south), and allows the
+                    // display to update from the very first tick without waiting for
+                    // direction confirmation.
+                    {
+                        double liveAz      = info.AtHome ? 0.0 : GetComputedAzimuth(info);
+                        double tickDelta   = liveAz - _prevSlewAz;
+                        if (tickDelta >  180.0) tickDelta -= 360.0;   // 0°/360° crossing
+                        if (tickDelta < -180.0) tickDelta += 360.0;
+                        _slewLiveAzAccum  += tickDelta;
+                        _prevSlewAz        = liveAz;
+
+                        _totalDegreesRotated = _preSlewTotal + _slewLiveAzAccum;
                         RaisePropertyChanged(nameof(TotalDegreesRotated));
                         RaisePropertyChanged(nameof(WrapCount));
                     }
@@ -276,40 +293,30 @@ namespace CableWrapMonitor {
                     TrackingStatus = TrackingStatus.Tracking;
 
                 } else {
-                    // ── Slew just ended — accumulate the true azimuth delta ───────────────
+                    // ── Slew just ended — commit the incremental accumulator ──────────────
                     if (_slewInProgress) {
                         _slewInProgress    = false;
                         _trackingTickCount = 0;
                         _lastBranch        = ""; // reset so transition logs fire below
 
-                        // If scope arrived at home, trust AtHome over the driver's Az
-                        // reading — the ALPACA driver often reports a stale value (e.g.
-                        // 179.83°) right at slew-end before its position has updated.
+                        // Do one final tick to capture any movement between the last live
+                        // tick and the exact moment Slewing went false.
                         double postSlewAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
-                        if (state.LastKnownAzimuth.HasValue) {
-                            double rawDelta = postSlewAz - state.LastKnownAzimuth.Value;
-                            if (rawDelta >  180.0) rawDelta -= 360.0;
-                            if (rawDelta < -180.0) rawDelta += 360.0;
-
-                            double delta;
-                            if (_slewDirectionSign != 0) {
-                                // Use before/after magnitude with the RA-confirmed sign so
-                                // long-way-round slews are credited correctly.
-                                delta = Math.Abs(rawDelta) * _slewDirectionSign;
-                                CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
-                                       $"(AtHome={info.AtHome}) raw={rawDelta:+0.00;-0.00}° dirSign={_slewDirectionSign:+0;-0} " +
-                                       $"delta={delta:+0.00;-0.00}° total={TotalDegreesRotated + delta:+0.0;-0.0}°");
-                            } else {
-                                // Direction unconfirmed — fall back to ±180° shortest-path heuristic.
-                                delta = rawDelta;
-                                CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
-                                       $"(AtHome={info.AtHome}) delta={delta:+0.00;-0.00}° (heuristic) " +
-                                       $"total={TotalDegreesRotated + delta:+0.0;-0.0}°");
-                            }
-                            Accumulate(delta);
-                        } else {
-                            CwmLog($"[SLEW-END] No pre-slew Az baseline — skipping. Post={postSlewAz:F2}° AtHome={info.AtHome}");
+                        if (!double.IsNaN(_prevSlewAz)) {
+                            double finalDelta = postSlewAz - _prevSlewAz;
+                            if (finalDelta >  180.0) finalDelta -= 360.0;
+                            if (finalDelta < -180.0) finalDelta += 360.0;
+                            _slewLiveAzAccum += finalDelta;
                         }
+
+                        CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth?.ToString("F2") ?? "?"}°→{postSlewAz:F2}° " +
+                               $"(AtHome={info.AtHome}) accum={_slewLiveAzAccum:+0.00;-0.00}° " +
+                               $"total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
+
+                        // state.TotalDegreesRotated was untouched during the slew (only
+                        // _totalDegreesRotated was updated for display). Accumulate adds
+                        // the full slew movement in one step.
+                        Accumulate(_slewLiveAzAccum);
                         state.LastKnownAzimuth = postSlewAz;
                     }
 
