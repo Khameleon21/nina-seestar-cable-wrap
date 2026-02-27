@@ -70,6 +70,7 @@ namespace CableWrapMonitor {
         private bool              _slewInProgress    = false;
         private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown
         private double            _preSlewRA         = 0;   // RA at slew start, for direction detection
+        private double            _preSlewTotal      = 0;   // TotalDegreesRotated at slew start, for live display
         private bool              _isMoving          = false;
         private string            _movementIndicator = "";
         private int               _atHomeSettleTicks = 0;   // ticks to wait after AtHome before snap
@@ -235,6 +236,7 @@ namespace CableWrapMonitor {
                         _slewInProgress    = true;
                         _slewDirectionSign = 0;
                         _preSlewRA         = info.RightAscension;
+                        _preSlewTotal      = state.TotalDegreesRotated;
                         CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}° RA={_preSlewRA:F3}h");
                         _lastBranch = "SLEW";
                     }
@@ -253,6 +255,18 @@ namespace CableWrapMonitor {
                                    $"Δ={raDelta:+0.00;-0.00}h → sign={_slewDirectionSign:+0;-0;0} " +
                                    $"({(_slewDirectionSign > 0 ? "CW" : "CCW")})");
                         }
+                    }
+
+                    // Live display update — computed Az is stable during slews so we can
+                    // show running total each tick once direction is confirmed.
+                    if (_slewDirectionSign != 0 && state.LastKnownAzimuth.HasValue) {
+                        double liveAz    = GetComputedAzimuth(info);
+                        double liveDelta = liveAz - state.LastKnownAzimuth.Value;
+                        if (liveDelta >  180.0) liveDelta -= 360.0;
+                        if (liveDelta < -180.0) liveDelta += 360.0;
+                        _totalDegreesRotated = _preSlewTotal + Math.Abs(liveDelta) * _slewDirectionSign;
+                        RaisePropertyChanged(nameof(TotalDegreesRotated));
+                        RaisePropertyChanged(nameof(WrapCount));
                     }
 
                     IsMoving = true;
