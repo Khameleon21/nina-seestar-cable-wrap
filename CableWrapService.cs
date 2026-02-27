@@ -69,6 +69,9 @@ namespace CableWrapMonitor {
         private bool              _slewInProgress    = false;
         private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown
         private int               _slewEarlySamples  = 0;   // early-direction ticks attempted
+        private bool              _isMoving          = false;
+        private string            _movementIndicator = "";
+        private int               _atHomeSettleTicks = 0;   // ticks to wait after AtHome before snap
         private string            _lastBranch        = "";   // transition detection
         private readonly object   _logLock           = new object();
         private string            _logDate           = "";
@@ -122,6 +125,24 @@ namespace CableWrapMonitor {
         public bool IsUnwinding {
             get => _isUnwinding;
             private set { _isUnwinding = value; RaisePropertyChanged(); }
+        }
+
+        /// <summary>
+        /// True while the scope is actively slewing or sidereal-tracking.
+        /// Used by the UI to drive a pulsing animation on the movement indicator.
+        /// </summary>
+        public bool IsMoving {
+            get => _isMoving;
+            private set { _isMoving = value; RaisePropertyChanged(); }
+        }
+
+        /// <summary>
+        /// Short text label shown next to Total Rotation while the scope is moving.
+        /// Values: "↻ CW", "↺ CCW", "↻ slewing", "→ tracking", or "".
+        /// </summary>
+        public string MovementIndicator {
+            get => _movementIndicator;
+            private set { _movementIndicator = value; RaisePropertyChanged(); }
         }
 
         /// <summary>
@@ -195,6 +216,9 @@ namespace CableWrapMonitor {
                     _slewInProgress        = false;
                     _slewDirectionSign     = 0;
                     _slewEarlySamples      = 0;
+                    _atHomeSettleTicks     = 0;
+                    IsMoving               = false;
+                    MovementIndicator      = "";
                     return;
                 }
 
@@ -204,7 +228,8 @@ namespace CableWrapMonitor {
                     // Instead: capture the pre-slew azimuth from the last stationary
                     // sample, then compute the true azimuth delta when the slew ends.
                     // No accumulation happens during the slew itself.
-                    _wasAtHome = false;
+                    _wasAtHome         = false;
+                    _atHomeSettleTicks = 0;
 
                     if (!_slewInProgress) {
                         _slewInProgress    = true;
@@ -233,6 +258,10 @@ namespace CableWrapMonitor {
                         _slewEarlySamples++;
                     }
 
+                    IsMoving = true;
+                    MovementIndicator = _slewDirectionSign == +1 ? "↻ CW"  :
+                                        _slewDirectionSign == -1 ? "↺ CCW" :
+                                                                   "↻ slewing";
                     TrackingStatus = TrackingStatus.Tracking;
 
                 } else {
@@ -274,8 +303,11 @@ namespace CableWrapMonitor {
 
                     if (info.TrackingEnabled) {
                         // ── TRACKING MODE: Azimuth (RA constant during sidereal tracking) ──
-                        _wasAtHome        = false;
-                        state.LastKnownRA = null;
+                        _wasAtHome         = false;
+                        _atHomeSettleTicks = 0;
+                        state.LastKnownRA  = null;
+                        IsMoving           = true;
+                        MovementIndicator  = "→ tracking";
 
                         if (_lastBranch != "TRACK") {
                             CwmLog("[→TRACK] Sidereal tracking started.");
@@ -303,18 +335,50 @@ namespace CableWrapMonitor {
                         // ── STOPPED ───────────────────────────────────────────────────────
                         // Not tracking, not slewing. Keep azimuth fresh so the next slew
                         // has an accurate pre-slew baseline. Snap fires here after FindHome.
-                        state.LastKnownRA      = null;
-                        state.LastKnownAzimuth = info.Azimuth; // keep baseline current
-                        TrackingStatus         = TrackingStatus.Stopped;
-                        _trackingTickCount     = 0;
+                        state.LastKnownRA  = null;
+                        TrackingStatus     = TrackingStatus.Stopped;
+                        _trackingTickCount = 0;
+                        IsMoving           = false;
+                        MovementIndicator  = "";
 
                         if (_lastBranch != "STOP") {
-                            CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome}  total={TotalDegreesRotated:+0.0;-0.0}°");
+                            // First STOPPED tick — immediately catch any azimuth motion that
+                            // occurred since the last 5-tick TRACKING sample (e.g., FindHome
+                            // completing in under 5 seconds).
+                            if (state.LastKnownAzimuth.HasValue) {
+                                double immediateAz = info.Azimuth;
+                                double catchDelta  = immediateAz - state.LastKnownAzimuth.Value;
+                                if (catchDelta >  180.0) catchDelta -= 360.0;
+                                if (catchDelta < -180.0) catchDelta += 360.0;
+                                if (Math.Abs(catchDelta) >= 0.5) {
+                                    Accumulate(catchDelta);
+                                    CwmLog($"[→STOP] Catch-up: Az {state.LastKnownAzimuth.Value:F2}°→{immediateAz:F2}° " +
+                                           $"delta={catchDelta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
+                                }
+                                state.LastKnownAzimuth = immediateAz;
+                            }
+                            CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome} total={TotalDegreesRotated:+0.0;-0.0}°");
                             _lastBranch = "STOP";
+                        } else {
+                            state.LastKnownAzimuth = info.Azimuth; // keep baseline current
                         }
 
-                        if (info.AtHome && !_wasAtHome)
-                            SnapToHomePosition();
+                        // At-home snap: wait several ticks after arrival so the position
+                        // reading is fully settled before rounding off the residual.
+                        if (info.AtHome) {
+                            if (!_wasAtHome) {
+                                // First tick at home — start the settle counter.
+                                _atHomeSettleTicks = 5;
+                                CwmLog($"[STOP] Arrived home. Settling {_atHomeSettleTicks} ticks before snap. " +
+                                       $"total={TotalDegreesRotated:+0.0;-0.0}°");
+                            } else if (_atHomeSettleTicks > 0) {
+                                _atHomeSettleTicks--;
+                                if (_atHomeSettleTicks == 0)
+                                    SnapToHomePosition();
+                            }
+                        } else {
+                            _atHomeSettleTicks = 0;
+                        }
                         _wasAtHome = info.AtHome;
                         return;
                     }

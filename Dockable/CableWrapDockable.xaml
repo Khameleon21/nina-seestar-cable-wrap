@@ -105,10 +105,43 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Total Rotation:"
                            Foreground="{DynamicResource PrimaryBrush}" Margin="0,0,8,0"/>
-                <TextBlock Grid.Column="1"
-                           Text="{Binding Service.TotalDegreesRotated, StringFormat={}{0:+0.0;-0.0;0.0}°}"
-                           FontWeight="Bold"
-                           Foreground="{DynamicResource PrimaryBrush}" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <TextBlock Text="{Binding Service.TotalDegreesRotated, StringFormat={}{0:+0.0;-0.0;0.0}°}"
+                               FontWeight="Bold"
+                               Foreground="{DynamicResource PrimaryBrush}" />
+                    <!-- Movement direction indicator — pulses while scope is moving -->
+                    <TextBlock Text="{Binding Service.MovementIndicator}"
+                               FontWeight="Bold"
+                               Margin="6,0,0,0"
+                               Foreground="{DynamicResource PrimaryBrush}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Service.IsMoving}" Value="True">
+                                        <DataTrigger.EnterActions>
+                                            <BeginStoryboard>
+                                                <Storyboard RepeatBehavior="Forever">
+                                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                     From="1.0" To="0.2"
+                                                                     Duration="0:0:0.8"
+                                                                     AutoReverse="True" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.EnterActions>
+                                        <DataTrigger.ExitActions>
+                                            <BeginStoryboard>
+                                                <Storyboard>
+                                                    <DoubleAnimation Storyboard.TargetProperty="Opacity"
+                                                                     To="1.0" Duration="0:0:0.2" />
+                                                </Storyboard>
+                                            </BeginStoryboard>
+                                        </DataTrigger.ExitActions>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
             </Grid>
 
             <!-- ── Wrap count ─────────────────────────────────────────────── -->
