@@ -270,7 +270,7 @@ namespace CableWrapMonitor {
                         // If scope arrived at home, trust AtHome over the driver's Az
                         // reading — the ALPACA driver often reports a stale value (e.g.
                         // 179.83°) right at slew-end before its position has updated.
-                        double postSlewAz = info.AtHome ? 0.0 : info.Azimuth;
+                        double postSlewAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
                         if (state.LastKnownAzimuth.HasValue) {
                             double rawDelta = postSlewAz - state.LastKnownAzimuth.Value;
                             if (rawDelta >  180.0) rawDelta -= 360.0;
@@ -315,15 +315,15 @@ namespace CableWrapMonitor {
                         if (_trackingTickCount < 5) return; // sample every 5 seconds
                         _trackingTickCount = 0;
 
-                        double currentAzimuth = info.Azimuth;
+                        double currentAzimuth = GetComputedAzimuth(info);
                         if (state.LastKnownAzimuth.HasValue) {
                             double delta = currentAzimuth - state.LastKnownAzimuth.Value;
                             if (delta >  180.0) delta -= 360.0;
                             if (delta < -180.0) delta += 360.0;
                             Accumulate(delta);
-                            CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
+                            CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° (calcAz={currentAzimuth:F2}°)");
                         } else {
-                            CwmLog($"[TRACK] Baseline set. Az={currentAzimuth:F2}°");
+                            CwmLog($"[TRACK] Baseline set. calcAz={currentAzimuth:F2}°");
                             TrackingStatus = TrackingStatus.Tracking;
                         }
                         state.LastKnownAzimuth = currentAzimuth;
@@ -343,9 +343,8 @@ namespace CableWrapMonitor {
                             // occurred since the last 5-tick TRACKING sample (e.g., FindHome
                             // completing in under 5 seconds).
                             if (state.LastKnownAzimuth.HasValue) {
-                                // Use AtHome override here too — if the driver's Az is still
-                                // stale from slew-end, this prevents a spurious 180° catch-up.
-                                double immediateAz = info.AtHome ? 0.0 : info.Azimuth;
+                                // Use AtHome override / computed Az — avoids stale driver reading.
+                                double immediateAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
                                 double catchDelta  = immediateAz - state.LastKnownAzimuth.Value;
                                 if (catchDelta >  180.0) catchDelta -= 360.0;
                                 if (catchDelta < -180.0) catchDelta += 360.0;
@@ -359,7 +358,7 @@ namespace CableWrapMonitor {
                             CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome} total={TotalDegreesRotated:+0.0;-0.0}°");
                             _lastBranch = "STOP";
                         } else {
-                            state.LastKnownAzimuth = info.Azimuth; // keep baseline current
+                            state.LastKnownAzimuth = info.AtHome ? 0.0 : GetComputedAzimuth(info); // keep baseline current
                         }
 
                         // At-home snap: wait several ticks after arrival so the position
@@ -429,6 +428,37 @@ namespace CableWrapMonitor {
             }
         }
 
+        // ── Computed azimuth from RA/Dec ──────────────────────────────────────────
+
+        /// <summary>
+        /// Computes azimuth from RA, Dec, sidereal time and site latitude — the same
+        /// way NINA's own UI does. This is smooth and stable even during slews,
+        /// whereas the ALPACA driver's Azimuth property can report garbage mid-slew.
+        ///
+        /// Az convention: N=0°, E=90°, S=180°, W=270°.
+        /// Falls back to info.Azimuth if site latitude/longitude are not configured.
+        /// </summary>
+        private static double GetComputedAzimuth(TelescopeInfo info) {
+            // Guard: if site coordinates are not set (both zero), fall back to driver
+            if (Math.Abs(info.SiteLatitude) < 0.001 && Math.Abs(info.SiteLongitude) < 0.001)
+                return info.Azimuth;
+
+            // Hour angle in radians: HA = LST - RA  (both in hours → multiply by π/12)
+            double haRad  = (info.SiderealTime - info.RightAscension) * Math.PI / 12.0;
+            double decRad = info.Declination   * Math.PI / 180.0;
+            double latRad = info.SiteLatitude  * Math.PI / 180.0;
+
+            // Az = atan2(-cos(dec)·sin(ha),  sin(dec)·cos(lat) - cos(dec)·cos(ha)·sin(lat))
+            // Gives N=0°, E=90°, S=180°, W=270° (standard astronomical Az).
+            double x = -Math.Cos(decRad) * Math.Sin(haRad);
+            double y  =  Math.Sin(decRad) * Math.Cos(latRad)
+                       - Math.Cos(decRad) * Math.Cos(haRad) * Math.Sin(latRad);
+
+            double az = Math.Atan2(x, y) * 180.0 / Math.PI;
+            if (az < 0.0) az += 360.0;
+            return az;
+        }
+
         private void FireAlert() {
             double wraps = Math.Abs(TotalDegreesRotated) / 360.0;
             string msg =
@@ -481,7 +511,7 @@ namespace CableWrapMonitor {
         private void SnapToHomePosition() {
             double total   = state.TotalDegreesRotated;
             double snapped = Math.Round(total / 360.0) * 360.0;
-            if (Math.Abs(snapped - total) < 0.5) return; // already within 0.5° of a whole wrap
+            if (Math.Abs(snapped - total) < 0.001) return; // already at a whole wrap
 
             Logger.Info($"CableWrapMonitor: Scope returned home — snapping wrap " +
                         $"{total:F1}° → {snapped:F1}°.");
