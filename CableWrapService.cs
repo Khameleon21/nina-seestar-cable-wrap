@@ -267,7 +267,10 @@ namespace CableWrapMonitor {
                         _trackingTickCount = 0;
                         _lastBranch        = ""; // reset so transition logs fire below
 
-                        double postSlewAz = info.Azimuth;
+                        // If scope arrived at home, trust AtHome over the driver's Az
+                        // reading — the ALPACA driver often reports a stale value (e.g.
+                        // 179.83°) right at slew-end before its position has updated.
+                        double postSlewAz = info.AtHome ? 0.0 : info.Azimuth;
                         if (state.LastKnownAzimuth.HasValue) {
                             double rawDelta = postSlewAz - state.LastKnownAzimuth.Value;
                             if (rawDelta >  180.0) rawDelta -= 360.0;
@@ -275,24 +278,22 @@ namespace CableWrapMonitor {
 
                             double delta;
                             if (_slewDirectionSign != 0) {
-                                // Direction confirmed from early-slew azimuth sampling.
-                                // Use before/after magnitude with the confirmed sign so
+                                // Use before/after magnitude with the RA-confirmed sign so
                                 // long-way-round slews are credited correctly.
                                 delta = Math.Abs(rawDelta) * _slewDirectionSign;
                                 CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
-                                       $"rawDelta={rawDelta:+0.00;-0.00}° dirSign={_slewDirectionSign:+0;-0} " +
+                                       $"(AtHome={info.AtHome}) raw={rawDelta:+0.00;-0.00}° dirSign={_slewDirectionSign:+0;-0} " +
                                        $"delta={delta:+0.00;-0.00}° total={TotalDegreesRotated + delta:+0.0;-0.0}°");
                             } else {
-                                // No usable early sample — fall back to ±180° wraparound
-                                // (shortest-path assumption; usually correct for short slews).
+                                // Direction unconfirmed — fall back to ±180° shortest-path heuristic.
                                 delta = rawDelta;
                                 CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
-                                       $"delta={delta:+0.00;-0.00}° (direction unconfirmed, using heuristic) " +
+                                       $"(AtHome={info.AtHome}) delta={delta:+0.00;-0.00}° (heuristic) " +
                                        $"total={TotalDegreesRotated + delta:+0.0;-0.0}°");
                             }
                             Accumulate(delta);
                         } else {
-                            CwmLog($"[SLEW-END] No pre-slew Az baseline — skipping. Post-slew Az={postSlewAz:F2}°");
+                            CwmLog($"[SLEW-END] No pre-slew Az baseline — skipping. Post={postSlewAz:F2}° AtHome={info.AtHome}");
                         }
                         state.LastKnownAzimuth = postSlewAz;
                     }
@@ -342,7 +343,9 @@ namespace CableWrapMonitor {
                             // occurred since the last 5-tick TRACKING sample (e.g., FindHome
                             // completing in under 5 seconds).
                             if (state.LastKnownAzimuth.HasValue) {
-                                double immediateAz = info.Azimuth;
+                                // Use AtHome override here too — if the driver's Az is still
+                                // stale from slew-end, this prevents a spurious 180° catch-up.
+                                double immediateAz = info.AtHome ? 0.0 : info.Azimuth;
                                 double catchDelta  = immediateAz - state.LastKnownAzimuth.Value;
                                 if (catchDelta >  180.0) catchDelta -= 360.0;
                                 if (catchDelta < -180.0) catchDelta += 360.0;
