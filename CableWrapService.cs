@@ -364,11 +364,9 @@ namespace CableWrapMonitor {
         /// multiple to correct that drift. e.g. 355° → 360°, 5° → 0°.
         /// </summary>
         private void SnapToHomePosition() {
-            double total = state.TotalDegreesRotated;
-            if (Math.Abs(total) < 1.0) return; // already at zero, nothing to do
-
+            double total   = state.TotalDegreesRotated;
             double snapped = Math.Round(total / 360.0) * 360.0;
-            if (Math.Abs(snapped - total) < 0.5) return; // no meaningful change
+            if (Math.Abs(snapped - total) < 0.5) return; // already within 0.5° of a whole wrap
 
             Logger.Info($"CableWrapMonitor: Scope returned home — snapping wrap " +
                         $"{total:F1}° → {snapped:F1}°.");
