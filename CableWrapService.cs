@@ -66,6 +66,10 @@ namespace CableWrapMonitor {
         private int               _trackingTickCount = 0;
         private bool              _isUnwinding       = false;
         private bool              _wasAtHome         = false;
+        private string            _lastBranch        = "";   // transition detection
+        private readonly object   _logLock           = new object();
+        private string            _logDate           = "";
+        private string            _logPath           = "";
 
         // ── Observable properties (bound to the dockable panel UI) ────────────────
 
@@ -142,6 +146,7 @@ namespace CableWrapMonitor {
             Instance = this;
 
             Directory.CreateDirectory(DataDirectory);
+            CleanupOldLogs();
 
             // Restore persisted state and settings from disk
             state    = LoadState();
@@ -161,6 +166,8 @@ namespace CableWrapMonitor {
 
             Logger.Info("CableWrapMonitor: Service started. " +
                         $"Resuming from {state.TotalDegreesRotated:F1}° total rotation.");
+            CwmLog($"[START] Service started. Resuming from {state.TotalDegreesRotated:F1}°. " +
+                   $"Threshold: {settings.WarningThresholdRotations:F1} wraps.");
         }
 
         // ── Poll tick ─────────────────────────────────────────────────────────────
@@ -174,6 +181,10 @@ namespace CableWrapMonitor {
                 var info = telescopeMediator.GetInfo();
 
                 if (!info.Connected) {
+                    if (_lastBranch != "DISC") {
+                        CwmLog("[DISCONNECT] Telescope disconnected.");
+                        _lastBranch = "DISC";
+                    }
                     TrackingStatus         = TrackingStatus.NotConnected;
                     state.LastKnownRA      = null;
                     state.LastKnownAzimuth = null;
@@ -188,13 +199,21 @@ namespace CableWrapMonitor {
                     _trackingTickCount     = 0;
                     state.LastKnownAzimuth = null;
 
+                    if (_lastBranch != "SLEW") {
+                        CwmLog("[→SLEW] Slew started.");
+                        _lastBranch = "SLEW";
+                    }
+
                     double currentRA = info.RightAscension; // hours, 0.0 – 24.0
                     if (state.LastKnownRA.HasValue) {
-                        double delta = currentRA - state.LastKnownRA.Value;
+                        double delta    = currentRA - state.LastKnownRA.Value;
                         if (delta >  12.0) delta -= 24.0;
                         if (delta < -12.0) delta += 24.0;
-                        Accumulate(delta * 15.0);
+                        double deltaDeg = delta * 15.0;
+                        Accumulate(deltaDeg);
+                        CwmLog($"[SLEW] RA delta={deltaDeg:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
                     } else {
+                        CwmLog($"[SLEW] Baseline set. RA={currentRA:F3}h");
                         TrackingStatus = TrackingStatus.Tracking;
                     }
                     state.LastKnownRA = currentRA;
@@ -204,6 +223,11 @@ namespace CableWrapMonitor {
                     // Reset RA baseline so the next slew picks up cleanly.
                     _wasAtHome        = false;
                     state.LastKnownRA = null;
+
+                    if (_lastBranch != "TRACK") {
+                        CwmLog("[→TRACK] Sidereal tracking started.");
+                        _lastBranch = "TRACK";
+                    }
 
                     _trackingTickCount++;
                     if (_trackingTickCount < 5) return; // sample every 5 seconds
@@ -215,7 +239,9 @@ namespace CableWrapMonitor {
                         if (delta >  180.0) delta -= 360.0;
                         if (delta < -180.0) delta += 360.0;
                         Accumulate(delta);
+                        CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
                     } else {
+                        CwmLog($"[TRACK] Baseline set. Az={currentAzimuth:F2}°");
                         TrackingStatus = TrackingStatus.Tracking;
                     }
                     state.LastKnownAzimuth = currentAzimuth;
@@ -230,6 +256,11 @@ namespace CableWrapMonitor {
                     state.LastKnownRA  = null;
                     TrackingStatus     = TrackingStatus.Stopped;
                     _trackingTickCount = 0;
+
+                    if (_lastBranch != "STOP") {
+                        CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome}  total={TotalDegreesRotated:+0.0;-0.0}°");
+                        _lastBranch = "STOP";
+                    }
 
                     if (info.AtHome && !_wasAtHome)
                         SnapToHomePosition();
@@ -267,6 +298,7 @@ namespace CableWrapMonitor {
                     $"Crossed {sign}{newWrapCount * 360}°");
                 Logger.Warning($"CableWrapMonitor: Wrap crossing #{newWrapCount} at " +
                                $"{state.TotalDegreesRotated:F1}°");
+                CwmLog($"[WRAP] Crossed {sign}{newWrapCount * 360}° — total now {state.TotalDegreesRotated:F1}°");
             }
         }
 
@@ -291,6 +323,9 @@ namespace CableWrapMonitor {
                 "'Reset — Cable Unwound' in the Cable Wrap Monitor panel.";
 
             Logger.Warning($"CableWrapMonitor: {msg}");
+            CwmLog($"[ALERT] Wrap warning! {Math.Abs(TotalDegreesRotated):F1}° " +
+                   $"({Math.Abs(TotalDegreesRotated) / 360.0:F2} wraps). " +
+                   $"Threshold: {WarningThresholdDegrees:F0}°");
         }
 
         // ── Public reset (called by the panel's Reset button) ─────────────────────
@@ -301,6 +336,7 @@ namespace CableWrapMonitor {
         /// </summary>
         public void Reset() {
             Logger.Info($"CableWrapMonitor: Manual reset at {state.TotalDegreesRotated:F1}°.");
+            CwmLog($"[RESET] Counter reset from {state.TotalDegreesRotated:+0.0;-0.0}° to 0°.");
 
             AppendHistory(state.TotalDegreesRotated, "Manual reset — cable physically unwound");
 
@@ -336,6 +372,7 @@ namespace CableWrapMonitor {
 
             Logger.Info($"CableWrapMonitor: Scope returned home — snapping wrap " +
                         $"{total:F1}° → {snapped:F1}°.");
+            CwmLog($"[SNAP] {total:+0.0;-0.0}° → {snapped:F1}° (corrected {snapped - total:+0.0;-0.0}°)");
             AppendHistory(total,
                 $"Scope returned home — drift corrected {total:F1}° → {snapped:F1}°");
 
@@ -385,6 +422,7 @@ namespace CableWrapMonitor {
                 }
 
                 Logger.Info($"CableWrapMonitor: Auto-unwind started. {startTotal:+0.0;-0.0}° to unwind.");
+                CwmLog($"[UNWIND-START] Auto-unwind started from {startTotal:+0.0;-0.0}°.");
                 AppendHistory(state.TotalDegreesRotated,
                     $"Auto-unwind started — {startTotal:+0.0;-0.0}° to unwind");
 
@@ -440,6 +478,7 @@ namespace CableWrapMonitor {
                     Logger.Info($"CableWrapMonitor: Unwind step {step} — " +
                                 $"RA {currentRA:F3}h → {targetRA:F3}h " +
                                 $"({stepDeg:+0.0;-0.0}°, {remaining:+0.0;-0.0}° remaining).");
+                    CwmLog($"[UNWIND-STEP {step}/{maxSteps}] {stepDeg:+0.0;-0.0}° — remaining={remaining:+0.0;-0.0}°");
 
                     var target = new Coordinates(targetRA, currentDec, Epoch.JNOW, Coordinates.RAType.Hours);
                     bool slewOk = await telescopeMediator.SlewToCoordinatesAsync(target, token);
@@ -475,6 +514,7 @@ namespace CableWrapMonitor {
 
                 // ── Step 4: Reset counter ──────────────────────────────────────────
                 Logger.Info("CableWrapMonitor: Auto-unwind complete. Resetting counter.");
+                CwmLog("[UNWIND-DONE] Auto-unwind complete. Scope homed.");
                 AppendHistory(state.TotalDegreesRotated, "Auto-unwind complete — scope homed, counter reset");
                 Reset();
                 progress?.Report(new ApplicationStatus {
@@ -482,9 +522,11 @@ namespace CableWrapMonitor {
                 });
 
             } catch (OperationCanceledException) {
+                CwmLog($"[UNWIND-CANCEL] Cancelled at {TotalDegreesRotated:+0.0;-0.0}° remaining.");
                 AppendHistory(state.TotalDegreesRotated, "Auto-unwind cancelled");
                 progress?.Report(new ApplicationStatus { Status = "Unwind cancelled." });
             } catch (Exception ex) {
+                CwmLog($"[UNWIND-FAIL] {ex.Message}");
                 Logger.Error($"CableWrapMonitor: Unwind failed: {ex.Message}");
                 progress?.Report(new ApplicationStatus { Status = $"Unwind failed: {ex.Message}" });
                 throw;
@@ -515,6 +557,37 @@ namespace CableWrapMonitor {
                 while (WrapHistory.Count > 0 && WrapHistory[0].Timestamp < cutoff)
                     WrapHistory.RemoveAt(0);
             });
+        }
+
+        // ── Dedicated log file ────────────────────────────────────────────────────
+
+        // Returns today's log path, refreshing the cached value on date rollover.
+        private string LogPath {
+            get {
+                string today = DateTime.Now.ToString("yyyy-MM-dd");
+                if (today != _logDate) {
+                    _logDate = today;
+                    _logPath = Path.Combine(DataDirectory, $"cwm-{today}.log");
+                }
+                return _logPath;
+            }
+        }
+
+        private void CwmLog(string message) {
+            try {
+                string line = $"{DateTime.Now:HH:mm:ss} {message}";
+                lock (_logLock)
+                    File.AppendAllText(LogPath, line + Environment.NewLine);
+            } catch { }
+        }
+
+        private void CleanupOldLogs() {
+            try {
+                DateTime cutoff = DateTime.Now.AddDays(-7);
+                foreach (string file in Directory.GetFiles(DataDirectory, "cwm-*.log"))
+                    if (File.GetLastWriteTime(file) < cutoff)
+                        File.Delete(file);
+            } catch { }
         }
 
         // ── Persistence ───────────────────────────────────────────────────────────
@@ -570,6 +643,7 @@ namespace CableWrapMonitor {
                 pollTimer.Stop();
                 pollTimer.Dispose();
                 SaveState();
+                CwmLog($"[STOP] Service stopped. Final total: {TotalDegreesRotated:+0.0;-0.0}°.");
                 disposed = true;
             }
         }
