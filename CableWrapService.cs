@@ -181,22 +181,10 @@ namespace CableWrapMonitor {
                     return;
                 }
 
-                // ── At-home snap ──────────────────────────────────────────────────────
-                // When the scope first settles at its home position (AtHome transitions
-                // false→true while not slewing), snap the accumulated wrap to the nearest
-                // lower full-rotation multiple. The Seestar approaches home from the
-                // counter-clockwise (unwinding) direction, so any sub-360° fractional
-                // wrap is physically removed. e.g. 269.2° → 0°, 722° → 720°.
-                // Guards: !info.Slewing  — don't fire while passing through home mid-slew
-                //         !_isUnwinding  — don't fire during our own automated unwind
-                bool scopeAtHome = info.AtHome && !info.Slewing;
-                if (scopeAtHome && !_wasAtHome)
-                    SnapToHomePosition();
-                _wasAtHome = scopeAtHome;
-
                 if (info.Slewing) {
                     // ── SLEW MODE: use RA (azimuth is unreliable during slews) ──────────
                     // Reset azimuth baseline so tracking picks up cleanly after the slew.
+                    _wasAtHome             = false;
                     _trackingTickCount     = 0;
                     state.LastKnownAzimuth = null;
 
@@ -214,6 +202,7 @@ namespace CableWrapMonitor {
                 } else if (info.TrackingEnabled) {
                     // ── TRACKING MODE: use Azimuth (RA is held constant during tracking) ─
                     // Reset RA baseline so the next slew picks up cleanly.
+                    _wasAtHome        = false;
                     state.LastKnownRA = null;
 
                     _trackingTickCount++;
@@ -232,34 +221,20 @@ namespace CableWrapMonitor {
                     state.LastKnownAzimuth = currentAzimuth;
 
                 } else {
-                    // ── STOPPED / PARKING ─────────────────────────────────────────────────
-                    // Scope is not tracking and not reporting Slewing=true.
-                    // Some ALPACA drivers (including the Seestar) do not set Slewing=true
-                    // during Park or FindHome, so we still sample azimuth every 5 s to
-                    // catch that return-to-home motion. A ≥0.5° threshold filters
-                    // vibration noise while the scope is genuinely stationary.
-                    state.LastKnownRA = null;
-
-                    _trackingTickCount++;
-                    if (_trackingTickCount < 5) return;
+                    // ── STOPPED ───────────────────────────────────────────────────────────
+                    // Not tracking and not slewing. The AZ branch above handles motion
+                    // while TrackingEnabled=true — including FindHome on the Seestar, which
+                    // keeps tracking on during the return. The snap fires here, inside the
+                    // stopped block, so the AZ branch has had time to count the full return
+                    // motion before we correct any small residual drift.
+                    state.LastKnownRA  = null;
+                    TrackingStatus     = TrackingStatus.Stopped;
                     _trackingTickCount = 0;
 
-                    double currentAzimuth = info.Azimuth;
-                    if (state.LastKnownAzimuth.HasValue) {
-                        double delta = currentAzimuth - state.LastKnownAzimuth.Value;
-                        if (delta >  180.0) delta -= 360.0;
-                        if (delta < -180.0) delta += 360.0;
-                        if (Math.Abs(delta) >= 0.5) {
-                            // Real physical movement (parking/homing) — accumulate it.
-                            Accumulate(delta);
-                            TrackingStatus = TrackingStatus.Tracking;
-                        } else {
-                            TrackingStatus = TrackingStatus.Stopped;
-                        }
-                    } else {
-                        TrackingStatus = TrackingStatus.Stopped;
-                    }
-                    state.LastKnownAzimuth = currentAzimuth;
+                    if (info.AtHome && !_wasAtHome)
+                        SnapToHomePosition();
+                    _wasAtHome = info.AtHome;
+                    return;
                 }
 
                 // Save to disk every 10 seconds rather than every tick
@@ -347,22 +322,22 @@ namespace CableWrapMonitor {
         // ── At-home snap ──────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Called once when the scope settles at its home position.
-        /// Snaps the accumulated wrap to the nearest lower full-rotation multiple,
-        /// removing any sub-360° fractional wrap that the Seestar physically unwinds
-        /// when it returns home.
+        /// Called once when the scope settles at its home position (tracking stops).
+        /// The AZ branch tracks the return motion while TrackingEnabled=true, leaving
+        /// only a small residual drift. This method rounds to the nearest whole-wrap
+        /// multiple to correct that drift. e.g. 355° → 360°, 5° → 0°.
         /// </summary>
         private void SnapToHomePosition() {
             double total = state.TotalDegreesRotated;
             if (Math.Abs(total) < 1.0) return; // already at zero, nothing to do
 
-            double snapped = Math.Truncate(total / 360.0) * 360.0;
+            double snapped = Math.Round(total / 360.0) * 360.0;
             if (Math.Abs(snapped - total) < 0.5) return; // no meaningful change
 
             Logger.Info($"CableWrapMonitor: Scope returned home — snapping wrap " +
                         $"{total:F1}° → {snapped:F1}°.");
             AppendHistory(total,
-                $"Scope returned home — wrap adjusted {total:F1}° → {snapped:F1}°");
+                $"Scope returned home — drift corrected {total:F1}° → {snapped:F1}°");
 
             state.TotalDegreesRotated = snapped;
             _totalDegreesRotated      = snapped;
