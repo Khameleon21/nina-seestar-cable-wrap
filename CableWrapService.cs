@@ -267,26 +267,19 @@ namespace CableWrapMonitor {
                         }
                     }
 
-                    // Incremental Az accumulation for live display.
-                    // Log every tick so we can diagnose driver behaviour during slews.
+                    // Incremental Az accumulation for slew-end calculation.
+                    // We do NOT show this as a live display: the Seestar ALPACA driver
+                    // reports planned waypoints (not real-time position) and sets
+                    // AtHome=true before the scope physically arrives, making tick-by-tick
+                    // Az values unreliable for display. The display stays frozen at the
+                    // pre-slew total; it updates correctly in one step at slew-end.
                     {
-                        double liveAz      = info.AtHome ? 0.0 : GetComputedAzimuth(info);
-                        double prevAz      = _prevSlewAz;           // capture before overwrite for logging
-                        double tickDelta   = liveAz - prevAz;
-                        if (tickDelta >  180.0) tickDelta -= 360.0;   // 0°/360° crossing
+                        double liveAz    = info.AtHome ? 0.0 : GetComputedAzimuth(info);
+                        double tickDelta = liveAz - _prevSlewAz;
+                        if (tickDelta >  180.0) tickDelta -= 360.0;
                         if (tickDelta < -180.0) tickDelta += 360.0;
-                        _slewLiveAzAccum  += tickDelta;
-                        _prevSlewAz        = liveAz;
-
-                        _totalDegreesRotated = _preSlewTotal + _slewLiveAzAccum;
-                        RaisePropertyChanged(nameof(TotalDegreesRotated));
-                        RaisePropertyChanged(nameof(WrapCount));
-
-                        CwmLog($"[SLEW-TICK] RA={info.RightAscension:F4}h Dec={info.Declination:F2}° " +
-                               $"LST={info.SiderealTime:F4}h driverAz={info.Azimuth:F2}° " +
-                               $"calcAz={liveAz:F2}° prev={prevAz:F2}° " +
-                               $"tickΔ={tickDelta:+0.00;-0.00}° accum={_slewLiveAzAccum:+0.00;-0.00}° " +
-                               $"display={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
+                        _slewLiveAzAccum += tickDelta;
+                        _prevSlewAz       = liveAz;
                     }
 
                     IsMoving = true;
