@@ -68,7 +68,7 @@ namespace CableWrapMonitor {
         private bool              _wasAtHome         = false;
         private bool              _slewInProgress    = false;
         private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown
-        private int               _slewEarlySamples  = 0;   // early-direction ticks attempted
+        private double            _preSlewRA         = 0;   // RA at slew start, for direction detection
         private bool              _isMoving          = false;
         private string            _movementIndicator = "";
         private int               _atHomeSettleTicks = 0;   // ticks to wait after AtHome before snap
@@ -215,7 +215,6 @@ namespace CableWrapMonitor {
                     _wasAtHome             = false;
                     _slewInProgress        = false;
                     _slewDirectionSign     = 0;
-                    _slewEarlySamples      = 0;
                     _atHomeSettleTicks     = 0;
                     IsMoving               = false;
                     MovementIndicator      = "";
@@ -234,28 +233,25 @@ namespace CableWrapMonitor {
                     if (!_slewInProgress) {
                         _slewInProgress    = true;
                         _slewDirectionSign = 0;
-                        _slewEarlySamples  = 0;
-                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}°");
+                        _preSlewRA         = info.RightAscension;
+                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}° RA={_preSlewRA:F3}h");
                         _lastBranch = "SLEW";
                     }
 
-                    // Sample azimuth in the first few ticks to confirm rotation direction.
-                    // Azimuth readings go unreliable later mid-slew but are usually valid
-                    // for the first 1-3 seconds, giving us enough to read CW vs CCW.
-                    if (_slewDirectionSign == 0 && _slewEarlySamples < 3 && state.LastKnownAzimuth.HasValue) {
-                        double earlyAz    = info.Azimuth;
-                        double earlyDelta = earlyAz - state.LastKnownAzimuth.Value;
-                        if (earlyDelta >  180.0) earlyDelta -= 360.0;
-                        if (earlyDelta < -180.0) earlyDelta += 360.0;
-                        if (Math.Abs(earlyDelta) >= 1.0 && Math.Abs(earlyDelta) <= 30.0) {
-                            _slewDirectionSign = Math.Sign(earlyDelta);
-                            CwmLog($"[SLEW-DIR] Sample #{_slewEarlySamples + 1}: Az={earlyAz:F2}° " +
-                                   $"delta={earlyDelta:+0.00;-0.00}° → sign={_slewDirectionSign:+0;-0;0} confirmed");
-                        } else {
-                            CwmLog($"[SLEW-DIR] Sample #{_slewEarlySamples + 1}: Az={earlyAz:F2}° " +
-                                   $"delta={earlyDelta:+0.00;-0.00}° — out of range, will retry");
+                    // Detect rotation direction from RA movement each tick until confirmed.
+                    // RA is reliable during slews even when Azimuth is not.
+                    // Northern hemisphere convention: RA decreasing → CW (azimuth increasing),
+                    // RA increasing → CCW (azimuth decreasing).
+                    if (_slewDirectionSign == 0) {
+                        double raDelta = info.RightAscension - _preSlewRA;
+                        if (raDelta >  12.0) raDelta -= 24.0;   // 0h/24h wraparound
+                        if (raDelta < -12.0) raDelta += 24.0;
+                        if (Math.Abs(raDelta) >= 0.05) {         // ~0.75° of travel — enough to be sure
+                            _slewDirectionSign = raDelta < 0 ? +1 : -1;
+                            CwmLog($"[SLEW-DIR] RA {_preSlewRA:F3}h→{info.RightAscension:F3}h " +
+                                   $"Δ={raDelta:+0.00;-0.00}h → sign={_slewDirectionSign:+0;-0;0} " +
+                                   $"({(_slewDirectionSign > 0 ? "CW" : "CCW")})");
                         }
-                        _slewEarlySamples++;
                     }
 
                     IsMoving = true;
