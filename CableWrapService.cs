@@ -67,6 +67,8 @@ namespace CableWrapMonitor {
         private bool              _isUnwinding       = false;
         private bool              _wasAtHome         = false;
         private bool              _slewInProgress    = false;
+        private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown
+        private int               _slewEarlySamples  = 0;   // early-direction ticks attempted
         private string            _lastBranch        = "";   // transition detection
         private readonly object   _logLock           = new object();
         private string            _logDate           = "";
@@ -191,6 +193,8 @@ namespace CableWrapMonitor {
                     state.LastKnownAzimuth = null;
                     _wasAtHome             = false;
                     _slewInProgress        = false;
+                    _slewDirectionSign     = 0;
+                    _slewEarlySamples      = 0;
                     return;
                 }
 
@@ -203,10 +207,32 @@ namespace CableWrapMonitor {
                     _wasAtHome = false;
 
                     if (!_slewInProgress) {
-                        _slewInProgress = true;
+                        _slewInProgress    = true;
+                        _slewDirectionSign = 0;
+                        _slewEarlySamples  = 0;
                         CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}°");
                         _lastBranch = "SLEW";
                     }
+
+                    // Sample azimuth in the first few ticks to confirm rotation direction.
+                    // Azimuth readings go unreliable later mid-slew but are usually valid
+                    // for the first 1-3 seconds, giving us enough to read CW vs CCW.
+                    if (_slewDirectionSign == 0 && _slewEarlySamples < 3 && state.LastKnownAzimuth.HasValue) {
+                        double earlyAz    = info.Azimuth;
+                        double earlyDelta = earlyAz - state.LastKnownAzimuth.Value;
+                        if (earlyDelta >  180.0) earlyDelta -= 360.0;
+                        if (earlyDelta < -180.0) earlyDelta += 360.0;
+                        if (Math.Abs(earlyDelta) >= 1.0 && Math.Abs(earlyDelta) <= 30.0) {
+                            _slewDirectionSign = Math.Sign(earlyDelta);
+                            CwmLog($"[SLEW-DIR] Sample #{_slewEarlySamples + 1}: Az={earlyAz:F2}° " +
+                                   $"delta={earlyDelta:+0.00;-0.00}° → sign={_slewDirectionSign:+0;-0;0} confirmed");
+                        } else {
+                            CwmLog($"[SLEW-DIR] Sample #{_slewEarlySamples + 1}: Az={earlyAz:F2}° " +
+                                   $"delta={earlyDelta:+0.00;-0.00}° — out of range, will retry");
+                        }
+                        _slewEarlySamples++;
+                    }
+
                     TrackingStatus = TrackingStatus.Tracking;
 
                 } else {
@@ -218,12 +244,28 @@ namespace CableWrapMonitor {
 
                         double postSlewAz = info.Azimuth;
                         if (state.LastKnownAzimuth.HasValue) {
-                            double delta = postSlewAz - state.LastKnownAzimuth.Value;
-                            if (delta >  180.0) delta -= 360.0;
-                            if (delta < -180.0) delta += 360.0;
+                            double rawDelta = postSlewAz - state.LastKnownAzimuth.Value;
+                            if (rawDelta >  180.0) rawDelta -= 360.0;
+                            if (rawDelta < -180.0) rawDelta += 360.0;
+
+                            double delta;
+                            if (_slewDirectionSign != 0) {
+                                // Direction confirmed from early-slew azimuth sampling.
+                                // Use before/after magnitude with the confirmed sign so
+                                // long-way-round slews are credited correctly.
+                                delta = Math.Abs(rawDelta) * _slewDirectionSign;
+                                CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
+                                       $"rawDelta={rawDelta:+0.00;-0.00}° dirSign={_slewDirectionSign:+0;-0} " +
+                                       $"delta={delta:+0.00;-0.00}° total={TotalDegreesRotated + delta:+0.0;-0.0}°");
+                            } else {
+                                // No usable early sample — fall back to ±180° wraparound
+                                // (shortest-path assumption; usually correct for short slews).
+                                delta = rawDelta;
+                                CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
+                                       $"delta={delta:+0.00;-0.00}° (direction unconfirmed, using heuristic) " +
+                                       $"total={TotalDegreesRotated + delta:+0.0;-0.0}°");
+                            }
                             Accumulate(delta);
-                            CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth.Value:F2}°→{postSlewAz:F2}° " +
-                                   $"delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
                         } else {
                             CwmLog($"[SLEW-END] No pre-slew Az baseline — skipping. Post-slew Az={postSlewAz:F2}°");
                         }
