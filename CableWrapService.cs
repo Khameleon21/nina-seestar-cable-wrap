@@ -268,14 +268,11 @@ namespace CableWrapMonitor {
                     }
 
                     // Incremental Az accumulation for live display.
-                    // Accumulate small per-tick deltas rather than recomputing from the
-                    // pre-slew baseline each tick. This avoids the ±180° wraparound glitch
-                    // that occurs when the scope crosses Az=180° (south), and allows the
-                    // display to update from the very first tick without waiting for
-                    // direction confirmation.
+                    // Log every tick so we can diagnose driver behaviour during slews.
                     {
                         double liveAz      = info.AtHome ? 0.0 : GetComputedAzimuth(info);
-                        double tickDelta   = liveAz - _prevSlewAz;
+                        double prevAz      = _prevSlewAz;           // capture before overwrite for logging
+                        double tickDelta   = liveAz - prevAz;
                         if (tickDelta >  180.0) tickDelta -= 360.0;   // 0°/360° crossing
                         if (tickDelta < -180.0) tickDelta += 360.0;
                         _slewLiveAzAccum  += tickDelta;
@@ -284,6 +281,12 @@ namespace CableWrapMonitor {
                         _totalDegreesRotated = _preSlewTotal + _slewLiveAzAccum;
                         RaisePropertyChanged(nameof(TotalDegreesRotated));
                         RaisePropertyChanged(nameof(WrapCount));
+
+                        CwmLog($"[SLEW-TICK] RA={info.RightAscension:F4}h Dec={info.Declination:F2}° " +
+                               $"LST={info.SiderealTime:F4}h driverAz={info.Azimuth:F2}° " +
+                               $"calcAz={liveAz:F2}° prev={prevAz:F2}° " +
+                               $"tickΔ={tickDelta:+0.00;-0.00}° accum={_slewLiveAzAccum:+0.00;-0.00}° " +
+                               $"display={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
                     }
 
                     IsMoving = true;
