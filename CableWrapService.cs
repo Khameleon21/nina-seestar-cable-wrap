@@ -275,14 +275,19 @@ namespace CableWrapMonitor {
                         }
                     }
 
-                    // Incremental Az accumulation + live display update.
-                    // Each call adds only the small delta since the last call,
-                    // so 360° wraparound is never a problem.
-                    // Note: we do NOT apply the AtHome=0° override here — the Seestar
-                    // sets AtHome=true at the START of a homing slew (not on arrival),
-                    // so using that override would cause a huge first-tick delta when the
-                    // scope is still at its outbound position. The override is applied only
-                    // at slew-end where it correctly captures the final position.
+                    // Incremental Az accumulation — each call adds only the small delta
+                    // since the last call, so 360° wraparound is never a problem.
+                    //
+                    // We do NOT update the live display here. The Seestar ALPACA driver
+                    // injects the TARGET RA/Dec into the data stream very early in the slew
+                    // (before the scope has physically moved), causing a large spurious
+                    // tick-delta that corrupts the running total display. The accumulator
+                    // itself is unaffected because its value at slew-end equals the sum of
+                    // all tick-deltas, and the waypoint delta is cancelled out by the
+                    // return to real-time position reporting on the next tick.
+                    //
+                    // Display stays frozen at _preSlewTotal and updates correctly at
+                    // slew-end when the full accumulated delta is committed via Accumulate().
                     {
                         double liveAz    = GetComputedAzimuth(info);
                         double tickDelta = liveAz - _prevSlewAz;
@@ -290,13 +295,6 @@ namespace CableWrapMonitor {
                         if (tickDelta < -180.0) tickDelta += 360.0;
                         _slewLiveAzAccum += tickDelta;
                         _prevSlewAz       = liveAz;
-
-                        // Live display: show running total as the slew progresses.
-                        // Does not touch state.TotalDegreesRotated — that only changes
-                        // at slew-end when the full accumulated delta is committed.
-                        _totalDegreesRotated = _preSlewTotal + _slewLiveAzAccum;
-                        RaisePropertyChanged(nameof(TotalDegreesRotated));
-                        RaisePropertyChanged(nameof(WrapCount));
                     }
 
                     IsMoving = true;
