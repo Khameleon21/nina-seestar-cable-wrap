@@ -4,13 +4,13 @@ using System.ComponentModel.Composition;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Timers;
 using System.Windows;
 using Newtonsoft.Json;
 using NINA.Astrometry;
 using NINA.Core.Model;
 using NINA.Core.Utility;
 using NINA.Equipment.Equipment.MyTelescope;
+using NINA.Equipment.Interfaces;
 using NINA.Equipment.Interfaces.Mediator;
 
 namespace CableWrapMonitor {
@@ -33,16 +33,18 @@ namespace CableWrapMonitor {
     /// into both the dockable panel ViewModel and the sequence instruction.
     ///
     /// Responsibilities:
-    ///   - Poll telescope RA every 5 seconds via ITelescopeMediator
-    ///   - Accumulate signed RA rotation in degrees, handling the 0h/24h wraparound
-    ///   - Detect and ignore slews (large RA changes in a single poll cycle)
-    ///   - Log 360° crossings to a history list
-    ///   - Fire a NINA warning notification when the threshold is exceeded
-    ///   - Persist and restore all state via JSON so remote sessions survive a restart
+    ///   - Subscribe to NINA's telescope mediator as a consumer so we receive the
+    ///     same fresh position data that NINA's own UI panels receive (no separate
+    ///     poll timer — NINA pushes data to UpdateDeviceInfo at its native rate).
+    ///   - Accumulate signed azimuth rotation in degrees, handling wrap-around.
+    ///   - Track both slews (RA-based accumulator) and sidereal tracking (Az-based).
+    ///   - Log 360° crossings to a history list.
+    ///   - Fire a warning notification when the threshold is exceeded.
+    ///   - Persist and restore all state via JSON so remote sessions survive a restart.
     /// </summary>
     [Export]
     [PartCreationPolicy(CreationPolicy.Shared)]
-    public class CableWrapService : BaseINPC, IDisposable {
+    public class CableWrapService : BaseINPC, ITelescopeConsumer, IDisposable {
 
         // ── Dependencies ──────────────────────────────────────────────────────────
 
@@ -61,25 +63,30 @@ namespace CableWrapMonitor {
 
         private CableWrapState    state;
         private CableWrapSettings settings;
-        private readonly System.Timers.Timer pollTimer;
-        private bool              disposed           = false;
-        private int               _pollTickCount     = 0;
-        private int               _trackingTickCount = 0;
-        private bool              _isUnwinding       = false;
-        private bool              _wasAtHome         = false;
-        private bool              _slewInProgress    = false;
-        private int               _slewDirectionSign = 0;   // +1=CW, -1=CCW, 0=unknown — used for MovementIndicator label only
-        private double            _preSlewRA         = 0;   // RA at slew start, for direction detection
-        private double            _preSlewTotal      = 0;   // TotalDegreesRotated at slew start, for live display
-        private double            _slewLiveAzAccum   = 0;   // cumulative Az delta during current slew (tick-by-tick sum)
-        private double            _prevSlewAz        = double.NaN; // computed Az at previous slew tick
-        private bool              _isMoving          = false;
-        private string            _movementIndicator = "";
-        private int               _atHomeSettleTicks = 0;   // ticks to wait after AtHome before snap
-        private string            _lastBranch        = "";   // transition detection
-        private readonly object   _logLock           = new object();
-        private string            _logDate           = "";
-        private string            _logPath           = "";
+        private bool              disposed            = false;
+        private bool              _isUnwinding        = false;
+        private bool              _wasAtHome          = false;
+        private bool              _slewInProgress     = false;
+        private int               _slewDirectionSign  = 0;   // +1=CW, -1=CCW, 0=unknown
+        private double            _preSlewRA          = 0;   // RA at slew start
+        private double            _preSlewTotal       = 0;   // TotalDegreesRotated at slew start
+        private double            _slewLiveAzAccum    = 0;   // cumulative Az delta during current slew
+        private double            _prevSlewAz         = double.NaN; // computed Az at previous slew call
+        private bool              _isMoving           = false;
+        private string            _movementIndicator  = "";
+
+        // Time-based rate limiters (replaces tick counters — UpdateDeviceInfo rate is variable)
+        private DateTime          _lastTrackingSample = DateTime.MinValue;
+        private DateTime          _atHomeArrivalTime  = DateTime.MinValue;
+        private DateTime          _lastStateSave      = DateTime.MinValue;
+        private static readonly TimeSpan TrackingSampleInterval = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan AtHomeSettleDelay      = TimeSpan.FromSeconds(5);
+        private static readonly TimeSpan StateSaveInterval      = TimeSpan.FromSeconds(10);
+
+        private string            _lastBranch         = "";   // transition detection
+        private readonly object   _logLock            = new object();
+        private string            _logDate            = "";
+        private string            _logPath            = "";
 
         // ── Observable properties (bound to the dockable panel UI) ────────────────
 
@@ -156,7 +163,7 @@ namespace CableWrapMonitor {
         public ObservableCollection<WrapHistoryEntry> WrapHistory { get; }
             = new ObservableCollection<WrapHistoryEntry>();
 
-        // ── Static singleton (used by CheckCableWrapInstruction to avoid MEF issues) ──
+        // ── Static singleton (used by sequence items to avoid MEF issues) ──────────
 
         /// <summary>
         /// Set when the service is constructed by MEF. Sequence items access the
@@ -186,11 +193,10 @@ namespace CableWrapMonitor {
             foreach (var entry in state.WrapHistory)
                 WrapHistory.Add(entry);
 
-            // Start the polling timer (1 second interval, state saved every 10 ticks)
-            pollTimer           = new System.Timers.Timer(TimeSpan.FromSeconds(1).TotalMilliseconds);
-            pollTimer.Elapsed  += OnPollTick;
-            pollTimer.AutoReset = true;
-            pollTimer.Start();
+            // Register as a telescope consumer — NINA will push fresh TelescopeInfo to us
+            // at its native poll rate (typically several times per second), giving us the
+            // same real-time position data that NINA's own UI panels receive.
+            telescopeMediator.RegisterConsumer(this);
 
             Logger.Info("CableWrapMonitor: Service started. " +
                         $"Resuming from {state.TotalDegreesRotated:F1}° total rotation.");
@@ -198,15 +204,18 @@ namespace CableWrapMonitor {
                    $"Threshold: {settings.WarningThresholdRotations:F1} wraps.");
         }
 
-        // ── Poll tick ─────────────────────────────────────────────────────────────
+        // ── ITelescopeConsumer ────────────────────────────────────────────────────
 
-        private void OnPollTick(object? sender, ElapsedEventArgs e) {
+        /// <summary>
+        /// Called by NINA's telescope mediator every time fresh telescope data is
+        /// available. This replaces the old 1-second poll timer — we now receive the
+        /// same data at the same rate as NINA's own display panels.
+        /// </summary>
+        public void UpdateDeviceInfo(TelescopeInfo info) {
             try {
                 // Do not accumulate while an automated unwind is in progress —
                 // the unwind routine manages the counter manually.
                 if (_isUnwinding) return;
-
-                var info = telescopeMediator.GetInfo();
 
                 if (!info.Connected) {
                     if (_lastBranch != "DISC") {
@@ -221,7 +230,7 @@ namespace CableWrapMonitor {
                     _slewDirectionSign     = 0;
                     _slewLiveAzAccum       = 0.0;
                     _prevSlewAz            = double.NaN;
-                    _atHomeSettleTicks     = 0;
+                    _atHomeArrivalTime     = DateTime.MinValue;
                     IsMoving               = false;
                     MovementIndicator      = "";
                     return;
@@ -230,11 +239,12 @@ namespace CableWrapMonitor {
                 if (info.Slewing) {
                     // ── SLEW MODE ────────────────────────────────────────────────────────
                     // Azimuth is unreliable mid-slew (-440° errors observed).
-                    // Instead: capture the pre-slew azimuth from the last stationary
-                    // sample, then compute the true azimuth delta when the slew ends.
-                    // No accumulation happens during the slew itself.
+                    // We accumulate incremental Az tick-by-tick during the slew and commit
+                    // the total at slew-end. No live display update during the slew — the
+                    // Seestar ALPACA driver reports planned waypoints, not real-time position,
+                    // so intermediate values are unreliable for display purposes.
                     _wasAtHome         = false;
-                    _atHomeSettleTicks = 0;
+                    _atHomeArrivalTime = DateTime.MinValue;
 
                     if (!_slewInProgress) {
                         _slewInProgress    = true;
@@ -243,7 +253,6 @@ namespace CableWrapMonitor {
                         _preSlewTotal      = state.TotalDegreesRotated;
                         _slewLiveAzAccum   = 0.0;
                         // Seed the incremental accumulator from the last known stationary Az.
-                        // Using computed Az here so the first tick delta is clean.
                         _prevSlewAz        = state.LastKnownAzimuth.HasValue
                                              ? state.LastKnownAzimuth.Value
                                              : GetComputedAzimuth(info);
@@ -251,10 +260,9 @@ namespace CableWrapMonitor {
                         _lastBranch = "SLEW";
                     }
 
-                    // Detect rotation direction from RA movement each tick until confirmed.
+                    // Detect rotation direction from RA movement until confirmed.
                     // RA is reliable during slews even when Azimuth is not.
-                    // Northern hemisphere convention: RA decreasing → CW (azimuth increasing),
-                    // RA increasing → CCW (azimuth decreasing).
+                    // Northern hemisphere: RA decreasing → CW, RA increasing → CCW.
                     if (_slewDirectionSign == 0) {
                         double raDelta = info.RightAscension - _preSlewRA;
                         if (raDelta >  12.0) raDelta -= 24.0;   // 0h/24h wraparound
@@ -267,12 +275,8 @@ namespace CableWrapMonitor {
                         }
                     }
 
-                    // Incremental Az accumulation for slew-end calculation.
-                    // We do NOT show this as a live display: the Seestar ALPACA driver
-                    // reports planned waypoints (not real-time position) and sets
-                    // AtHome=true before the scope physically arrives, making tick-by-tick
-                    // Az values unreliable for display. The display stays frozen at the
-                    // pre-slew total; it updates correctly in one step at slew-end.
+                    // Incremental Az accumulation — each call adds only the small delta
+                    // since the last call, so 360° wraparound is never a problem.
                     {
                         double liveAz    = info.AtHome ? 0.0 : GetComputedAzimuth(info);
                         double tickDelta = liveAz - _prevSlewAz;
@@ -291,12 +295,11 @@ namespace CableWrapMonitor {
                 } else {
                     // ── Slew just ended — commit the incremental accumulator ──────────────
                     if (_slewInProgress) {
-                        _slewInProgress    = false;
-                        _trackingTickCount = 0;
-                        _lastBranch        = ""; // reset so transition logs fire below
+                        _slewInProgress     = false;
+                        _lastTrackingSample = DateTime.MinValue; // reset so tracking immediately baselines
+                        _lastBranch         = "";                // reset so transition logs fire below
 
-                        // Do one final tick to capture any movement between the last live
-                        // tick and the exact moment Slewing went false.
+                        // Final tick: capture any movement between last slew tick and Slewing→false.
                         double postSlewAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
                         if (!double.IsNaN(_prevSlewAz)) {
                             double finalDelta = postSlewAz - _prevSlewAz;
@@ -309,9 +312,6 @@ namespace CableWrapMonitor {
                                $"(AtHome={info.AtHome}) accum={_slewLiveAzAccum:+0.00;-0.00}° " +
                                $"total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
 
-                        // state.TotalDegreesRotated was untouched during the slew (only
-                        // _totalDegreesRotated was updated for display). Accumulate adds
-                        // the full slew movement in one step.
                         Accumulate(_slewLiveAzAccum);
                         state.LastKnownAzimuth = postSlewAz;
                     }
@@ -319,7 +319,7 @@ namespace CableWrapMonitor {
                     if (info.TrackingEnabled) {
                         // ── TRACKING MODE: Azimuth (RA constant during sidereal tracking) ──
                         _wasAtHome         = false;
-                        _atHomeSettleTicks = 0;
+                        _atHomeArrivalTime = DateTime.MinValue;
                         state.LastKnownRA  = null;
                         IsMoving           = true;
                         MovementIndicator  = "→ tracking";
@@ -329,22 +329,24 @@ namespace CableWrapMonitor {
                             _lastBranch = "TRACK";
                         }
 
-                        _trackingTickCount++;
-                        if (_trackingTickCount < 5) return; // sample every 5 seconds
-                        _trackingTickCount = 0;
+                        // Rate-limit to every 5 seconds — NINA may push data many times/sec
+                        DateTime now = DateTime.UtcNow;
+                        if ((now - _lastTrackingSample) >= TrackingSampleInterval) {
+                            _lastTrackingSample = now;
 
-                        double currentAzimuth = GetComputedAzimuth(info);
-                        if (state.LastKnownAzimuth.HasValue) {
-                            double delta = currentAzimuth - state.LastKnownAzimuth.Value;
-                            if (delta >  180.0) delta -= 360.0;
-                            if (delta < -180.0) delta += 360.0;
-                            Accumulate(delta);
-                            CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° (calcAz={currentAzimuth:F2}°)");
-                        } else {
-                            CwmLog($"[TRACK] Baseline set. calcAz={currentAzimuth:F2}°");
-                            TrackingStatus = TrackingStatus.Tracking;
+                            double currentAzimuth = GetComputedAzimuth(info);
+                            if (state.LastKnownAzimuth.HasValue) {
+                                double delta = currentAzimuth - state.LastKnownAzimuth.Value;
+                                if (delta >  180.0) delta -= 360.0;
+                                if (delta < -180.0) delta += 360.0;
+                                Accumulate(delta);
+                                CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° (calcAz={currentAzimuth:F2}°)");
+                            } else {
+                                CwmLog($"[TRACK] Baseline set. calcAz={currentAzimuth:F2}°");
+                                TrackingStatus = TrackingStatus.Tracking;
+                            }
+                            state.LastKnownAzimuth = currentAzimuth;
                         }
-                        state.LastKnownAzimuth = currentAzimuth;
 
                     } else {
                         // ── STOPPED ───────────────────────────────────────────────────────
@@ -352,16 +354,13 @@ namespace CableWrapMonitor {
                         // has an accurate pre-slew baseline. Snap fires here after FindHome.
                         state.LastKnownRA  = null;
                         TrackingStatus     = TrackingStatus.Stopped;
-                        _trackingTickCount = 0;
                         IsMoving           = false;
                         MovementIndicator  = "";
 
                         if (_lastBranch != "STOP") {
-                            // First STOPPED tick — immediately catch any azimuth motion that
-                            // occurred since the last 5-tick TRACKING sample (e.g., FindHome
-                            // completing in under 5 seconds).
+                            // First STOPPED call — immediately catch any azimuth motion that
+                            // occurred since the last tracking sample (e.g., FindHome completing).
                             if (state.LastKnownAzimuth.HasValue) {
-                                // Use AtHome override / computed Az — avoids stale driver reading.
                                 double immediateAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
                                 double catchDelta  = immediateAz - state.LastKnownAzimuth.Value;
                                 if (catchDelta >  180.0) catchDelta -= 360.0;
@@ -376,37 +375,39 @@ namespace CableWrapMonitor {
                             CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome} total={TotalDegreesRotated:+0.0;-0.0}°");
                             _lastBranch = "STOP";
                         } else {
-                            state.LastKnownAzimuth = info.AtHome ? 0.0 : GetComputedAzimuth(info); // keep baseline current
+                            state.LastKnownAzimuth = info.AtHome ? 0.0 : GetComputedAzimuth(info);
                         }
 
-                        // At-home snap: wait several ticks after arrival so the position
-                        // reading is fully settled before rounding off the residual.
+                        // At-home snap: wait for position to fully settle after arriving home,
+                        // then round off any residual drift to the nearest whole-wrap multiple.
                         if (info.AtHome) {
                             if (!_wasAtHome) {
-                                // First tick at home — start the settle counter.
-                                _atHomeSettleTicks = 5;
-                                CwmLog($"[STOP] Arrived home. Settling {_atHomeSettleTicks} ticks before snap. " +
+                                // Scope just arrived at home — start the settle timer.
+                                _atHomeArrivalTime = DateTime.UtcNow;
+                                CwmLog($"[STOP] Arrived home. Waiting {AtHomeSettleDelay.TotalSeconds}s before snap. " +
                                        $"total={TotalDegreesRotated:+0.0;-0.0}°");
-                            } else if (_atHomeSettleTicks > 0) {
-                                _atHomeSettleTicks--;
-                                if (_atHomeSettleTicks == 0)
-                                    SnapToHomePosition();
+                            } else if (_atHomeArrivalTime != DateTime.MinValue &&
+                                       (DateTime.UtcNow - _atHomeArrivalTime) >= AtHomeSettleDelay) {
+                                _atHomeArrivalTime = DateTime.MinValue; // prevent repeat firing
+                                SnapToHomePosition();
                             }
                         } else {
-                            _atHomeSettleTicks = 0;
+                            _atHomeArrivalTime = DateTime.MinValue;
                         }
                         _wasAtHome = info.AtHome;
-                        return;
                     }
                 }
 
-                // Save to disk every 10 seconds rather than every tick
-                _pollTickCount++;
-                if (_pollTickCount % 10 == 0)
+                // Time-based state save — runs at most every 10 seconds regardless of
+                // how frequently UpdateDeviceInfo is called.
+                DateTime saveNow = DateTime.UtcNow;
+                if ((saveNow - _lastStateSave) >= StateSaveInterval) {
+                    _lastStateSave = saveNow;
                     SaveState();
+                }
 
             } catch (Exception ex) {
-                Logger.Error($"CableWrapMonitor: Error during poll tick: {ex.Message}");
+                Logger.Error($"CableWrapMonitor: Error in UpdateDeviceInfo: {ex.Message}");
             }
         }
 
@@ -507,7 +508,7 @@ namespace CableWrapMonitor {
             state.ZeroSetTimestamp    = DateTime.UtcNow;
             state.LastLoggedWrapCount = 0;
             state.AlertFired          = false;
-            state.LastKnownRA         = null; // re-establish baselines on next tick
+            state.LastKnownRA         = null; // re-establish baselines on next update
             state.LastKnownAzimuth    = null;
 
             _totalDegreesRotated = 0;
@@ -521,10 +522,9 @@ namespace CableWrapMonitor {
         // ── At-home snap ──────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Called once when the scope settles at its home position (tracking stops).
-        /// The AZ branch tracks the return motion while TrackingEnabled=true, leaving
-        /// only a small residual drift. This method rounds to the nearest whole-wrap
-        /// multiple to correct that drift. e.g. 355° → 360°, 5° → 0°.
+        /// Called once when the scope has settled at its home position.
+        /// Rounds the accumulated total to the nearest whole-wrap multiple to correct
+        /// any residual drift. e.g. 355° → 360°, 5° → 0°, 722° → 720°.
         /// </summary>
         private void SnapToHomePosition() {
             double total   = state.TotalDegreesRotated;
@@ -555,7 +555,7 @@ namespace CableWrapMonitor {
         ///   1. Slewing straight up to a safe high-altitude position (near north celestial
         ///      pole) so that no subsequent RA slew can go below the horizon.
         ///   2. Stepping RA in ≤60° increments to physically rotate the azimuth axis
-        ///      backward. The poll timer is suppressed during this time (_isUnwinding=true)
+        ///      backward. UpdateDeviceInfo is suppressed during this time (_isUnwinding=true)
         ///      and the counter is decremented manually after each step so the UI shows
         ///      the number going down.
         ///   3. Sending the scope home to land on a clean mechanical zero.
@@ -564,8 +564,8 @@ namespace CableWrapMonitor {
         public async Task UnwindAsync(IProgress<ApplicationStatus>? progress, CancellationToken token) {
             if (_isUnwinding) return;
             try {
-                // Set _isUnwinding = true BEFORE any slews so that OnPollTick skips
-                // accumulation for the entire operation — otherwise the poll timer
+                // Set _isUnwinding = true BEFORE any slews so that UpdateDeviceInfo skips
+                // accumulation for the entire operation — otherwise the mediator push
                 // fights the unwind and the counter keeps climbing.
                 IsUnwinding = true;
 
@@ -612,15 +612,11 @@ namespace CableWrapMonitor {
                 double currentDec = info.Declination;
 
                 // ── Step 2: Unwind loop ────────────────────────────────────────────
-                // The poll timer is suppressed, so the counter will NOT change on its
+                // The mediator push is suppressed, so the counter will NOT change on its
                 // own. We decrement it manually after each slew so the display shows
                 // the wrap count going down toward zero.
                 //
                 // Direction: to unwind positive wrap, we decrease RA (slew west).
-                // The poll timer originally confirmed this — in v0.2.1, the minus
-                // direction was producing negative deltas (counter going down) before
-                // the safe slew noise confused the picture. The poll timer is now
-                // suppressed, so we manually decrement after each step.
                 const int    maxSteps   = 20;
                 const double maxStepDeg = 60.0;
                 int    step      = 0;
@@ -801,8 +797,7 @@ namespace CableWrapMonitor {
 
         public void Dispose() {
             if (!disposed) {
-                pollTimer.Stop();
-                pollTimer.Dispose();
+                telescopeMediator.RemoveConsumer(this);
                 SaveState();
                 CwmLog($"[STOP] Service stopped. Final total: {TotalDegreesRotated:+0.0;-0.0}°.");
                 disposed = true;
