@@ -263,11 +263,12 @@ namespace CableWrapMonitor {
                         _prevSlewAz          = state.LastKnownAzimuth.HasValue
                                                ? state.LastKnownAzimuth.Value
                                                : GetComputedAzimuth(info);
-                        // Seed the display accumulator from the driver's raw Az.
-                        // info.Azimuth tracks actual mechanical position (same source as
-                        // NINA's telescope panel) without the RA/Dec waypoint spike.
-                        _prevSlewDisplayAz   = ((info.Azimuth % 360.0) + 360.0) % 360.0;
-                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}° driverAz={_prevSlewDisplayAz:F2}° RA={_preSlewRA:F3}h");
+                        // Seed the display accumulator from the computed Az (same as pre-slew
+                        // baseline). info.Azimuth reports 0° at home (driver placeholder) —
+                        // using GetComputedAzimuth gives the real home Az (≈180°) so the
+                        // first display tick (info.Azimuth = real Az ≈180°) has delta ≈ 0°.
+                        _prevSlewDisplayAz   = GetComputedAzimuth(info);
+                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}° seedAz={_prevSlewDisplayAz:F2}° RA={_preSlewRA:F3}h");
                         _lastBranch = "SLEW";
                     }
 
@@ -338,7 +339,8 @@ namespace CableWrapMonitor {
                         _lastBranch         = "";                // reset so transition logs fire below
 
                         // Final tick: capture any movement between last slew tick and Slewing→false.
-                        double postSlewAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
+                        // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
+                        double postSlewAz = GetComputedAzimuth(info);
                         if (!double.IsNaN(_prevSlewAz)) {
                             double finalDelta = postSlewAz - _prevSlewAz;
                             if (finalDelta >  180.0) finalDelta -= 360.0;
@@ -399,7 +401,8 @@ namespace CableWrapMonitor {
                             // First STOPPED call — immediately catch any azimuth motion that
                             // occurred since the last tracking sample (e.g., FindHome completing).
                             if (state.LastKnownAzimuth.HasValue) {
-                                double immediateAz = info.AtHome ? 0.0 : GetComputedAzimuth(info);
+                                // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
+                                double immediateAz = GetComputedAzimuth(info);
                                 double catchDelta  = immediateAz - state.LastKnownAzimuth.Value;
                                 if (catchDelta >  180.0) catchDelta -= 360.0;
                                 if (catchDelta < -180.0) catchDelta += 360.0;
@@ -413,7 +416,9 @@ namespace CableWrapMonitor {
                             CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome} total={TotalDegreesRotated:+0.0;-0.0}°");
                             _lastBranch = "STOP";
                         } else {
-                            state.LastKnownAzimuth = info.AtHome ? 0.0 : GetComputedAzimuth(info);
+                            // Keep azimuth fresh so the next slew has an accurate pre-slew baseline.
+                            // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
+                            state.LastKnownAzimuth = GetComputedAzimuth(info);
                         }
 
                         // At-home snap: wait for position to fully settle after arriving home,
