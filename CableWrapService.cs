@@ -275,15 +275,28 @@ namespace CableWrapMonitor {
                         }
                     }
 
-                    // Incremental Az accumulation — each call adds only the small delta
-                    // since the last call, so 360° wraparound is never a problem.
+                    // Incremental Az accumulation + live display update.
+                    // Each call adds only the small delta since the last call,
+                    // so 360° wraparound is never a problem.
+                    // Note: we do NOT apply the AtHome=0° override here — the Seestar
+                    // sets AtHome=true at the START of a homing slew (not on arrival),
+                    // so using that override would cause a huge first-tick delta when the
+                    // scope is still at its outbound position. The override is applied only
+                    // at slew-end where it correctly captures the final position.
                     {
-                        double liveAz    = info.AtHome ? 0.0 : GetComputedAzimuth(info);
+                        double liveAz    = GetComputedAzimuth(info);
                         double tickDelta = liveAz - _prevSlewAz;
                         if (tickDelta >  180.0) tickDelta -= 360.0;
                         if (tickDelta < -180.0) tickDelta += 360.0;
                         _slewLiveAzAccum += tickDelta;
                         _prevSlewAz       = liveAz;
+
+                        // Live display: show running total as the slew progresses.
+                        // Does not touch state.TotalDegreesRotated — that only changes
+                        // at slew-end when the full accumulated delta is committed.
+                        _totalDegreesRotated = _preSlewTotal + _slewLiveAzAccum;
+                        RaisePropertyChanged(nameof(TotalDegreesRotated));
+                        RaisePropertyChanged(nameof(WrapCount));
                     }
 
                     IsMoving = true;
