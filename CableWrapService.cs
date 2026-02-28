@@ -278,16 +278,16 @@ namespace CableWrapMonitor {
                     // Incremental Az accumulation — each call adds only the small delta
                     // since the last call, so 360° wraparound is never a problem.
                     //
-                    // We do NOT update the live display here. The Seestar ALPACA driver
-                    // injects the TARGET RA/Dec into the data stream very early in the slew
-                    // (before the scope has physically moved), causing a large spurious
-                    // tick-delta that corrupts the running total display. The accumulator
-                    // itself is unaffected because its value at slew-end equals the sum of
-                    // all tick-deltas, and the waypoint delta is cancelled out by the
-                    // return to real-time position reporting on the next tick.
+                    // The Seestar ALPACA driver injects the TARGET RA/Dec into the data
+                    // stream very early in the slew (before the scope has physically moved),
+                    // causing a large spurious tick-delta. The accumulator self-corrects
+                    // on the very next tick (when the driver resumes real-time reporting),
+                    // so the FINAL value is always correct. However, showing it during the
+                    // spike produces a misleading display.
                     //
-                    // Display stays frozen at _preSlewTotal and updates correctly at
-                    // slew-end when the full accumulated delta is committed via Accumulate().
+                    // Fix: delay live display until _slewDirectionSign is confirmed (≥0.75°
+                    // of RA movement). By that point the spike has come and gone and the
+                    // accumulator is tracking real movement correctly.
                     {
                         double liveAz    = GetComputedAzimuth(info);
                         double tickDelta = liveAz - _prevSlewAz;
@@ -295,6 +295,13 @@ namespace CableWrapMonitor {
                         if (tickDelta < -180.0) tickDelta += 360.0;
                         _slewLiveAzAccum += tickDelta;
                         _prevSlewAz       = liveAz;
+
+                        // Start showing live total only once direction is confirmed.
+                        if (_slewDirectionSign != 0) {
+                            _totalDegreesRotated = _preSlewTotal + _slewLiveAzAccum;
+                            RaisePropertyChanged(nameof(TotalDegreesRotated));
+                            RaisePropertyChanged(nameof(WrapCount));
+                        }
                     }
 
                     IsMoving = true;
