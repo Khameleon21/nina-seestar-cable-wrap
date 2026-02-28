@@ -70,10 +70,8 @@ namespace CableWrapMonitor {
         private int               _slewDirectionSign  = 0;   // +1=CW, -1=CCW, 0=unknown
         private double            _preSlewRA          = 0;   // RA at slew start
         private double            _preSlewTotal       = 0;   // TotalDegreesRotated at slew start
-        private double            _slewLiveAzAccum    = 0;   // cumulative Az delta during current slew (for slew-end commit)
-        private double            _prevSlewAz         = double.NaN; // computed Az at previous slew call
-        private double            _slewDisplayAccum   = 0;   // display-only accumulator (driver raw Az)
-        private double            _prevSlewDisplayAz  = double.NaN; // driver Az at previous slew call
+        private double            _slewLiveAzAccum    = 0;   // cumulative Az delta during current slew
+        private double            _prevSlewAz         = double.NaN; // computed Az at previous slew tick
         private DateTime          _lastSlewLog        = DateTime.MinValue;
         private bool              _isMoving           = false;
         private string            _movementIndicator  = "";
@@ -233,8 +231,6 @@ namespace CableWrapMonitor {
                     _slewDirectionSign     = 0;
                     _slewLiveAzAccum       = 0.0;
                     _prevSlewAz            = double.NaN;
-                    _slewDisplayAccum      = 0.0;
-                    _prevSlewDisplayAz     = double.NaN;
                     _atHomeArrivalTime     = DateTime.MinValue;
                     IsMoving               = false;
                     MovementIndicator      = "";
@@ -252,34 +248,28 @@ namespace CableWrapMonitor {
                     _atHomeArrivalTime = DateTime.MinValue;
 
                     if (!_slewInProgress) {
-                        _slewInProgress      = true;
-                        _slewDirectionSign   = 0;
-                        _preSlewRA           = info.RightAscension;
-                        _preSlewTotal        = state.TotalDegreesRotated;
-                        _slewLiveAzAccum     = 0.0;
-                        _slewDisplayAccum    = 0.0;
-                        _lastSlewLog         = DateTime.UtcNow;
-                        // Seed the real accumulator from the last known stationary Az.
-                        _prevSlewAz          = state.LastKnownAzimuth.HasValue
-                                               ? state.LastKnownAzimuth.Value
-                                               : GetComputedAzimuth(info);
-                        // Seed the display accumulator from the computed Az (same as pre-slew
-                        // baseline). info.Azimuth reports 0° at home (driver placeholder) —
-                        // using GetComputedAzimuth gives the real home Az (≈180°) so the
-                        // first display tick (info.Azimuth = real Az ≈180°) has delta ≈ 0°.
-                        _prevSlewDisplayAz   = GetComputedAzimuth(info);
-                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={state.LastKnownAzimuth?.ToString("F2") ?? "unknown"}° seedAz={_prevSlewDisplayAz:F2}° RA={_preSlewRA:F3}h");
+                        _slewInProgress    = true;
+                        _slewDirectionSign = 0;
+                        _preSlewRA         = info.RightAscension;
+                        _preSlewTotal      = state.TotalDegreesRotated;
+                        _slewLiveAzAccum   = 0.0;
+                        _lastSlewLog       = DateTime.UtcNow;
+                        // Seed accumulator from last known stationary Az (GetComputedAzimuth,
+                        // which is ≈180° at home). Never use info.Azimuth here — the driver
+                        // reports 0° as a placeholder when the scope is at its home position.
+                        _prevSlewAz        = state.LastKnownAzimuth.HasValue
+                                             ? state.LastKnownAzimuth.Value
+                                             : GetComputedAzimuth(info);
+                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={_prevSlewAz:F2}° RA={_preSlewRA:F3}h");
                         _lastBranch = "SLEW";
                     }
 
                     // Detect rotation direction from RA movement until confirmed.
-                    // RA is reliable during slews even when Azimuth is not.
-                    // Northern hemisphere: RA decreasing → CW, RA increasing → CCW.
                     if (_slewDirectionSign == 0) {
                         double raDelta = info.RightAscension - _preSlewRA;
-                        if (raDelta >  12.0) raDelta -= 24.0;   // 0h/24h wraparound
+                        if (raDelta >  12.0) raDelta -= 24.0;
                         if (raDelta < -12.0) raDelta += 24.0;
-                        if (Math.Abs(raDelta) >= 0.05) {         // ~0.75° of travel — enough to be sure
+                        if (Math.Abs(raDelta) >= 0.05) {
                             _slewDirectionSign = raDelta < 0 ? +1 : -1;
                             CwmLog($"[SLEW-DIR] RA {_preSlewRA:F3}h→{info.RightAscension:F3}h " +
                                    $"Δ={raDelta:+0.00;-0.00}h → sign={_slewDirectionSign:+0;-0;0} " +
@@ -287,42 +277,29 @@ namespace CableWrapMonitor {
                         }
                     }
 
-                    // ── Real accumulator (GetComputedAzimuth) ─────────────────────────
-                    // Used for the slew-end commit. Proven correct despite intermediate
-                    // spikes (the driver's RA/Dec waypoint jump self-cancels over 2 ticks).
+                    // Accumulate tick-by-tick using GetComputedAzimuth (computed from RA/Dec/LST).
+                    // This is honest at home (≈180°, matching our seed) unlike info.Azimuth
+                    // which reports 0° as a placeholder for several seconds after slew start.
+                    // The driver occasionally sends a target-RA waypoint 1-2 ticks early,
+                    // causing a brief ≈30° blip that self-cancels within 2 ticks (<1 second).
                     {
                         double liveAz    = GetComputedAzimuth(info);
                         double tickDelta = liveAz - _prevSlewAz;
                         if (tickDelta >  180.0) tickDelta -= 360.0;
                         if (tickDelta < -180.0) tickDelta += 360.0;
-                        _slewLiveAzAccum += tickDelta;
-                        _prevSlewAz       = liveAz;
-                    }
-
-                    // ── Display accumulator (driver raw Az) ────────────────────────────
-                    // info.Azimuth is what NINA's own telescope panel displays — it tracks
-                    // actual mechanical position smoothly without the RA/Dec waypoint spike.
-                    // Incremental tick accumulation, separate from the real accumulator.
-                    {
-                        double driverAz = ((info.Azimuth % 360.0) + 360.0) % 360.0;
-                        if (!double.IsNaN(_prevSlewDisplayAz)) {
-                            double displayDelta = driverAz - _prevSlewDisplayAz;
-                            if (displayDelta >  180.0) displayDelta -= 360.0;
-                            if (displayDelta < -180.0) displayDelta += 360.0;
-                            _slewDisplayAccum    += displayDelta;
-                            _totalDegreesRotated  = _preSlewTotal + _slewDisplayAccum;
-                            RaisePropertyChanged(nameof(TotalDegreesRotated));
-                            RaisePropertyChanged(nameof(WrapCount));
-                        }
-                        _prevSlewDisplayAz = driverAz;
+                        _slewLiveAzAccum     += tickDelta;
+                        _prevSlewAz           = liveAz;
+                        // Drive display from the same accumulator every tick.
+                        _totalDegreesRotated  = _preSlewTotal + _slewLiveAzAccum;
+                        RaisePropertyChanged(nameof(TotalDegreesRotated));
+                        RaisePropertyChanged(nameof(WrapCount));
                     }
 
                     // Periodic slew log entry (every 5 seconds)
                     if ((DateTime.UtcNow - _lastSlewLog).TotalSeconds >= 5.0) {
                         _lastSlewLog = DateTime.UtcNow;
-                        CwmLog($"[SLEW] driverAz={((info.Azimuth%360+360)%360):F2}° " +
-                               $"display={_slewDisplayAccum:+0.0;-0.0}° " +
-                               $"calcAccum={_slewLiveAzAccum:+0.0;-0.0}°");
+                        CwmLog($"[SLEW] calcAz={_prevSlewAz:F2}° accum={_slewLiveAzAccum:+0.0;-0.0}° " +
+                               $"total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
                     }
 
                     IsMoving = true;
