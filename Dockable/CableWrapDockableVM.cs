@@ -154,25 +154,47 @@ namespace CableWrapMonitor.Dockable {
 
             // ── Arc model (cable position on unit circle) ─────────────────────
             // Home = 9 o'clock (−1, 0). CW = positive total, arc grows CW.
-            // Each 360° lap gets a new colour drawn on top of the previous,
-            // so the overlapping segment visually shows the higher wrap number.
+            // Each 360° lap gets a new colour drawn on top of the previous.
             double total    = Service.TotalDegreesRotated;
             double absTotal = Math.Abs(total);
             double sign     = total >= 0 ? 1.0 : -1.0;
 
-            // Lap palette — each full 360° of winding gets the next colour.
             var lapColors = new OxyColor[] {
-                ninaBlue,                      // Lap 1: blue  (safe)
-                OxyColor.Parse("#FFD700"),      // Lap 2: gold
-                OxyColor.Parse("#FF8C00"),      // Lap 3: orange
-                warnRed,                        // Lap 4+: red
+                ninaBlue,                      // Wrap 1: blue
+                OxyColor.Parse("#FFD700"),      // Wrap 2: gold
+                OxyColor.Parse("#FF8C00"),      // Wrap 3: orange
+                warnRed,                        // Wrap 4+: red
             };
+            var lapNames = new[] { "Wrap 1", "Wrap 2", "Wrap 3", "Wrap 4+" };
 
             var sp = new PlotModel {
                 Background          = OxyColors.Transparent,
                 PlotAreaBorderColor = OxyColors.Transparent,
-                IsLegendVisible     = false,
+                IsLegendVisible     = true,
             };
+
+            // Always-visible legend — defined by empty ghost series so the colour
+            // key is shown even before any rotation has accumulated.
+            sp.Legends.Add(new Legend {
+                LegendPosition        = LegendPosition.RightTop,
+                LegendPlacement       = LegendPlacement.Inside,
+                LegendBackground      = OxyColor.FromArgb(140, 20, 20, 20),
+                LegendBorderThickness = 0,
+                LegendTextColor       = axisColor,
+                LegendFontSize        = 9,
+                LegendSymbolLength    = 10,
+                LegendItemSpacing     = 2,
+                LegendPadding         = 4,
+            });
+            for (int i = 0; i < lapColors.Length; i++) {
+                sp.Series.Add(new LineSeries {
+                    Color           = lapColors[i],
+                    StrokeThickness = 3.5,
+                    MarkerType      = MarkerType.None,
+                    Title           = lapNames[i],
+                    // No points — renders nothing but anchors the legend entry.
+                });
+            }
 
             sp.Axes.Add(new LinearAxis {
                 Position      = AxisPosition.Bottom,
@@ -215,15 +237,13 @@ namespace CableWrapMonitor.Dockable {
                 double totalRad     = total * Math.PI / 180.0;
                 double currentAngle = homeAngle - totalRad;
 
-                // Draw each 360° lap as a separate LineSeries with its own colour.
-                // Laps are drawn in order so later laps paint on top of earlier ones —
-                // the overlap region shows the colour of the highest lap, which is
-                // exactly the "colour change where the arc crosses itself" the user wants.
+                // Draw each 360° lap as a separate untitled LineSeries (no legend
+                // entry — the ghost series above already define the colour key).
                 double drawnDeg = 0.0;
                 int    lapIdx   = 0;
                 while (absTotal - drawnDeg >= 0.5 && lapIdx < lapColors.Length * 2) {
-                    double lapDeg  = Math.Min(absTotal - drawnDeg, 360.0);
-                    int    numPts  = (int)Math.Ceiling(lapDeg);
+                    double lapDeg   = Math.Min(absTotal - drawnDeg, 360.0);
+                    int    numPts   = (int)Math.Ceiling(lapDeg);
                     double startRad = drawnDeg * Math.PI / 180.0;
                     double lapRad   = lapDeg   * Math.PI / 180.0;
                     OxyColor lc     = lapColors[Math.Min(lapIdx, lapColors.Length - 1)];
@@ -232,7 +252,6 @@ namespace CableWrapMonitor.Dockable {
                         Color           = lc,
                         StrokeThickness = 3.5,
                         MarkerType      = MarkerType.None,
-                        Title           = $"Wrap {lapIdx + 1}",
                     };
                     for (int i = 0; i <= numPts; i++) {
                         double t     = (double)i / numPts;
@@ -255,22 +274,6 @@ namespace CableWrapMonitor.Dockable {
                 };
                 dot.Points.Add(new ScatterPoint(Math.Cos(currentAngle), Math.Sin(currentAngle)));
                 sp.Series.Add(dot);
-
-                // Legend — show only when 2+ laps are present
-                if (lapIdx > 1) {
-                    sp.IsLegendVisible = true;
-                    sp.Legends.Add(new Legend {
-                        LegendPosition        = LegendPosition.RightTop,
-                        LegendPlacement       = LegendPlacement.Inside,
-                        LegendBackground      = OxyColor.FromArgb(140, 20, 20, 20),
-                        LegendBorderThickness = 0,
-                        LegendTextColor       = axisColor,
-                        LegendFontSize        = 9,
-                        LegendSymbolLength    = 10,
-                        LegendItemSpacing     = 2,
-                        LegendPadding         = 4,
-                    });
-                }
             }
 
             sp.InvalidatePlot(false);
