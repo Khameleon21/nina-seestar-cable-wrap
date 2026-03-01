@@ -201,12 +201,40 @@
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="230" />
+                    <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
                 <oxy:PlotView Grid.Column="1"
                               Width="230" Height="230"
                               Model="{Binding SpiralModel}"
                               Background="Transparent" />
+                <!-- Legend outside the chart so it doesn't overlap the arc -->
+                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0">
+                    <StackPanel Orientation="Horizontal" Margin="0,3">
+                        <Rectangle Width="14" Height="3" Fill="#4A90D9"
+                                   VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBlock Text="Wrap 1" FontSize="10"
+                                   Foreground="{DynamicResource PrimaryBrush}" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,3">
+                        <Rectangle Width="14" Height="3" Fill="#FFD700"
+                                   VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBlock Text="Wrap 2" FontSize="10"
+                                   Foreground="{DynamicResource PrimaryBrush}" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,3">
+                        <Rectangle Width="14" Height="3" Fill="#FF8C00"
+                                   VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBlock Text="Wrap 3" FontSize="10"
+                                   Foreground="{DynamicResource PrimaryBrush}" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,3">
+                        <Rectangle Width="14" Height="3" Fill="#FF4444"
+                                   VerticalAlignment="Center" Margin="0,0,5,0" />
+                        <TextBlock Text="Wrap 4+" FontSize="10"
+                                   Foreground="{DynamicResource PrimaryBrush}" />
+                    </StackPanel>
+                </StackPanel>
             </Grid>
 
             <!-- ── Separator ─────────────────────────────────────────────── -->

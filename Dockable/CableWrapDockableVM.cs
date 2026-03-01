@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel.Composition;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -13,7 +12,6 @@ using NINA.WPF.Base.ViewModel;
 using OxyPlot;
 using OxyPlot.Annotations;
 using OxyPlot.Axes;
-using OxyPlot.Legends;
 using OxyPlot.Series;
 
 namespace CableWrapMonitor.Dockable {
@@ -165,36 +163,12 @@ namespace CableWrapMonitor.Dockable {
                 OxyColor.Parse("#FF8C00"),      // Wrap 3: orange
                 warnRed,                        // Wrap 4+: red
             };
-            var lapNames = new[] { "Wrap 1", "Wrap 2", "Wrap 3", "Wrap 4+" };
 
             var sp = new PlotModel {
                 Background          = OxyColors.Transparent,
                 PlotAreaBorderColor = OxyColors.Transparent,
-                IsLegendVisible     = true,
+                IsLegendVisible     = false,
             };
-
-            // Always-visible legend — defined by empty ghost series so the colour
-            // key is shown even before any rotation has accumulated.
-            sp.Legends.Add(new Legend {
-                LegendPosition        = LegendPosition.RightTop,
-                LegendPlacement       = LegendPlacement.Inside,
-                LegendBackground      = OxyColor.FromArgb(140, 20, 20, 20),
-                LegendBorderThickness = 0,
-                LegendTextColor       = axisColor,
-                LegendFontSize        = 9,
-                LegendSymbolLength    = 10,
-                LegendItemSpacing     = 2,
-                LegendPadding         = 4,
-            });
-            for (int i = 0; i < lapColors.Length; i++) {
-                sp.Series.Add(new LineSeries {
-                    Color           = lapColors[i],
-                    StrokeThickness = 3.5,
-                    MarkerType      = MarkerType.None,
-                    Title           = lapNames[i],
-                    // No points — renders nothing but anchors the legend entry.
-                });
-            }
 
             sp.Axes.Add(new LinearAxis {
                 Position      = AxisPosition.Bottom,
