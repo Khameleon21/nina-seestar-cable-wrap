@@ -193,7 +193,7 @@
                           Margin="0,0,0,4" />
 
             <!-- ── Spiral chart ───────────────────────────────────────────── -->
-            <TextBlock Text="Cable Wrap Path:"
+            <TextBlock Text="Cable Position:"
                        FontWeight="Bold"
                        Foreground="{DynamicResource PrimaryBrush}"
                        Margin="0,4,0,2" />

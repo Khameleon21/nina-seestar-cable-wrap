@@ -151,11 +151,12 @@ namespace CableWrapMonitor.Dockable {
             ts.InvalidatePlot(false);
             TimeSeriesModel = ts;
 
-            // ── Spiral model ─────────────────────────────────────────────────
-            double maxDeg = samples.Count > 0
-                ? samples.Max(s => Math.Abs(s.Degrees))
-                : 0;
-            double maxR = Math.Max(1.2, maxDeg / 360.0 + 0.2);
+            // ── Arc model (cable position on unit circle) ─────────────────────
+            // Home = 9 o'clock (−1, 0). CW rotation = positive total = arc grows CW.
+            // Arc erases itself naturally: it always reflects the current signed total.
+            double total     = Service.TotalDegreesRotated;
+            bool overThresh  = Math.Abs(total) >= thresh;
+            OxyColor arcColor = overThresh ? warnRed : ninaBlue;
 
             var sp = new PlotModel {
                 Background          = OxyColors.Transparent,
@@ -165,86 +166,71 @@ namespace CableWrapMonitor.Dockable {
 
             sp.Axes.Add(new LinearAxis {
                 Position      = AxisPosition.Bottom,
-                Minimum       = -maxR - 0.2,
-                Maximum       =  maxR + 0.2,
+                Minimum       = -1.3,
+                Maximum       =  1.3,
                 IsAxisVisible = false,
             });
             sp.Axes.Add(new LinearAxis {
                 Position      = AxisPosition.Left,
-                Minimum       = -maxR - 0.2,
-                Maximum       =  maxR + 0.2,
+                Minimum       = -1.3,
+                Maximum       =  1.3,
                 IsAxisVisible = false,
             });
 
-            // Crosshairs
-            sp.Annotations.Add(new LineAnnotation {
-                Type      = LineAnnotationType.Horizontal,
-                Y         = 0,
-                Color     = OxyColor.FromArgb(40, 200, 200, 200),
-                LineStyle = LineStyle.Solid,
-            });
-            sp.Annotations.Add(new LineAnnotation {
-                Type      = LineAnnotationType.Vertical,
-                X         = 0,
-                Color     = OxyColor.FromArgb(40, 200, 200, 200),
-                LineStyle = LineStyle.Solid,
-            });
-
-            // Wrap rings — one faint circle per full rotation
-            int numRings = (int)Math.Ceiling(maxR);
-            for (int i = 1; i <= numRings; i++) {
-                var ring = new LineSeries {
-                    Color           = faintGrey,
-                    StrokeThickness = 0.5,
-                    MarkerType      = MarkerType.None,
-                };
-                for (int j = 0; j <= 72; j++) {
-                    double theta = j * 2.0 * Math.PI / 72;
-                    ring.Points.Add(new DataPoint(i * Math.Cos(theta), i * Math.Sin(theta)));
-                }
-                sp.Series.Add(ring);
-            }
-
-            // Threshold ring (red dashed)
-            double threshR = thresh / 360.0;
-            var threshRing = new LineSeries {
-                Color           = warnRed,
-                StrokeThickness = 1.0,
-                LineStyle       = LineStyle.Dash,
-                MarkerType      = MarkerType.None,
-            };
-            for (int j = 0; j <= 72; j++) {
-                double theta = j * 2.0 * Math.PI / 72;
-                threshRing.Points.Add(new DataPoint(threshR * Math.Cos(theta), threshR * Math.Sin(theta)));
-            }
-            sp.Series.Add(threshRing);
-
-            // Spiral path (cable wound up as seen end-on)
-            var path = new LineSeries {
-                Color           = ninaBlue,
+            // Background track ring
+            var track = new LineSeries {
+                Color           = faintGrey,
                 StrokeThickness = 1.5,
                 MarkerType      = MarkerType.None,
             };
-            foreach (var s in samples) {
-                double theta = s.Degrees * Math.PI / 180.0;
-                double r     = Math.Abs(s.Degrees) / 360.0;
-                path.Points.Add(new DataPoint(r * Math.Cos(theta), r * Math.Sin(theta)));
+            for (int j = 0; j <= 360; j++) {
+                double a = j * Math.PI / 180.0;
+                track.Points.Add(new DataPoint(Math.Cos(a), Math.Sin(a)));
             }
-            sp.Series.Add(path);
+            sp.Series.Add(track);
 
-            // Current position — filled circle dot
-            if (samples.Count > 0) {
-                var last  = samples[samples.Count - 1];
-                double theta = last.Degrees * Math.PI / 180.0;
-                double r     = Math.Abs(last.Degrees) / 360.0;
+            // Home marker at 9 o'clock (−1, 0)
+            var homeDot = new ScatterSeries {
+                MarkerType            = MarkerType.Circle,
+                MarkerSize            = 5,
+                MarkerFill            = OxyColor.FromArgb(150, 200, 200, 200),
+                MarkerStroke          = OxyColors.Transparent,
+                MarkerStrokeThickness = 0,
+            };
+            homeDot.Points.Add(new ScatterPoint(-1.0, 0.0));
+            sp.Series.Add(homeDot);
+
+            // Wound arc and current position dot
+            if (Math.Abs(total) >= 0.5) {
+                // homeAngle = π (9 o'clock in standard math coords with y-up).
+                // CW on screen = decreasing math angle, so currentAngle = π − total*(π/180).
+                double homeAngle    = Math.PI;
+                double totalRad     = total * Math.PI / 180.0;
+                double currentAngle = homeAngle - totalRad;
+
+                // One point per degree; cap at 720° (2 laps) to avoid performance issues.
+                int numPts = (int)Math.Min(Math.Ceiling(Math.Abs(total)), 720.0);
+                var arcSeries = new LineSeries {
+                    Color           = arcColor,
+                    StrokeThickness = 3.5,
+                    MarkerType      = MarkerType.None,
+                };
+                for (int i = 0; i <= numPts; i++) {
+                    double t     = (double)i / numPts;
+                    double angle = homeAngle - totalRad * t;
+                    arcSeries.Points.Add(new DataPoint(Math.Cos(angle), Math.Sin(angle)));
+                }
+                sp.Series.Add(arcSeries);
+
+                // Current position dot
                 var dot = new ScatterSeries {
                     MarkerType            = MarkerType.Circle,
-                    MarkerSize            = 5,
-                    MarkerFill            = ninaBlue,
+                    MarkerSize            = 7,
+                    MarkerFill            = arcColor,
                     MarkerStroke          = OxyColors.White,
-                    MarkerStrokeThickness = 1,
+                    MarkerStrokeThickness = 1.5,
                 };
-                dot.Points.Add(new ScatterPoint(r * Math.Cos(theta), r * Math.Sin(theta)));
+                dot.Points.Add(new ScatterPoint(Math.Cos(currentAngle), Math.Sin(currentAngle)));
                 sp.Series.Add(dot);
             }
 
