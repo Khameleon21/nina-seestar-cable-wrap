@@ -5,8 +5,9 @@
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:local="clr-namespace:CableWrapMonitor.Dockable"
              xmlns:model="clr-namespace:CableWrapMonitor"
+             xmlns:oxy="http://oxyplot.org/wpf"
              mc:Ignorable="d"
-             d:DesignWidth="300" d:DesignHeight="450">
+             d:DesignWidth="300" d:DesignHeight="700">
 
     <UserControl.Resources>
 
@@ -181,10 +182,37 @@
                 </StackPanel>
             </Grid>
 
+            <!-- ── Time-series chart ─────────────────────────────────────── -->
+            <TextBlock Text="Rotation Tonight:"
+                       FontWeight="Bold"
+                       Foreground="{DynamicResource PrimaryBrush}"
+                       Margin="0,4,0,2" />
+            <oxy:PlotView Model="{Binding TimeSeriesModel}"
+                          Height="130"
+                          Background="Transparent"
+                          Margin="0,0,0,4" />
+
+            <!-- ── Spiral chart ───────────────────────────────────────────── -->
+            <TextBlock Text="Cable Wrap Path:"
+                       FontWeight="Bold"
+                       Foreground="{DynamicResource PrimaryBrush}"
+                       Margin="0,4,0,2" />
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="230" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <oxy:PlotView Grid.Column="1"
+                              Width="230" Height="230"
+                              Model="{Binding SpiralModel}"
+                              Background="Transparent" />
+            </Grid>
+
             <!-- ── Separator ─────────────────────────────────────────────── -->
             <Border BorderBrush="{DynamicResource BorderBrush}"
                     BorderThickness="0,1,0,0"
-                    Margin="0,0,0,8" />
+                    Margin="0,8,0,8" />
 
             <!-- ── Wrap history ───────────────────────────────────────────── -->
             <TextBlock Text="Wrap History:"

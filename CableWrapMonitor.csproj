@@ -38,6 +38,7 @@
       in Visual Studio and install the latest "NINA.Plugin" package.
     -->
     <PackageReference Include="NINA.Plugin" Version="3.2.0.9001" />
+    <PackageReference Include="OxyPlot.Wpf" Version="2.1.2" />
   </ItemGroup>
 
 </Project>

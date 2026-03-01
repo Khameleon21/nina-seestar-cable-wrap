@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel.Composition;
 using System.IO;
@@ -85,6 +86,12 @@ namespace CableWrapMonitor {
         private static readonly TimeSpan StateSaveInterval      = TimeSpan.FromSeconds(10);
 
         private string            _lastBranch         = "";   // transition detection
+
+        // Graph data (in-memory only — not persisted)
+        private readonly List<RotationSample> _graphSamples    = new List<RotationSample>();
+        private DateTime                      _lastGraphSample  = DateTime.MinValue;
+        private double                        _lastGraphDegrees = double.NaN;
+
         private readonly object   _logLock            = new object();
         private string            _logDate            = "";
         private string            _logPath            = "";
@@ -164,6 +171,12 @@ namespace CableWrapMonitor {
         public ObservableCollection<WrapHistoryEntry> WrapHistory { get; }
             = new ObservableCollection<WrapHistoryEntry>();
 
+        /// <summary>
+        /// In-memory time-series of rotation samples, used to populate the charts.
+        /// Raises PropertyChanged(nameof(GraphSamples)) whenever a new point is added.
+        /// </summary>
+        public IReadOnlyList<RotationSample> GraphSamples => _graphSamples;
+
         // ── Static singleton (used by sequence items to avoid MEF issues) ──────────
 
         /// <summary>
@@ -203,6 +216,9 @@ namespace CableWrapMonitor {
                         $"Resuming from {state.TotalDegreesRotated:F1}° total rotation.");
             CwmLog($"[START] Service started. Resuming from {state.TotalDegreesRotated:F1}°. " +
                    $"Threshold: {settings.WarningThresholdRotations:F1} wraps.");
+
+            // Seed chart with the initial (resumed) value so it has a starting point.
+            RecordGraphSample();
         }
 
         // ── ITelescopeConsumer ────────────────────────────────────────────────────
@@ -439,6 +455,7 @@ namespace CableWrapMonitor {
             RaisePropertyChanged(nameof(WrapCount));
             CheckForWrapCrossing();
             CheckForWarningThreshold();
+            RecordGraphSample();
         }
 
         // Logs a new entry every time the accumulator crosses another 360° multiple
@@ -452,6 +469,20 @@ namespace CableWrapMonitor {
                 Logger.Warning($"CableWrapMonitor: Wrap crossing #{newWrapCount} at " +
                                $"{state.TotalDegreesRotated:F1}°");
                 CwmLog($"[WRAP] Crossed {sign}{newWrapCount * 360}° — total now {state.TotalDegreesRotated:F1}°");
+            }
+        }
+
+        // Adds a sample to the in-memory graph list when enough time or rotation has passed
+        private void RecordGraphSample() {
+            double   deg = state.TotalDegreesRotated;
+            DateTime now = DateTime.Now;
+            bool timeElapsed = (now - _lastGraphSample).TotalSeconds >= 60.0;
+            bool bigChange   = double.IsNaN(_lastGraphDegrees) || Math.Abs(deg - _lastGraphDegrees) >= 15.0;
+            if (_graphSamples.Count == 0 || timeElapsed || bigChange) {
+                _graphSamples.Add(new RotationSample { Timestamp = now, Degrees = deg });
+                _lastGraphSample  = now;
+                _lastGraphDegrees = deg;
+                RaisePropertyChanged(nameof(GraphSamples));
             }
         }
 
@@ -534,6 +565,12 @@ namespace CableWrapMonitor {
             _totalDegreesRotated = 0;
             RaisePropertyChanged(nameof(TotalDegreesRotated));
             RaisePropertyChanged(nameof(WrapCount));
+
+            // Force an immediate graph point at zero so the chart reflects the reset.
+            _graphSamples.Add(new RotationSample { Timestamp = DateTime.Now, Degrees = 0.0 });
+            _lastGraphSample  = DateTime.Now;
+            _lastGraphDegrees = 0.0;
+            RaisePropertyChanged(nameof(GraphSamples));
 
             TrackingStatus = TrackingStatus.Tracking;
             SaveState();

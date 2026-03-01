@@ -90,4 +90,13 @@ namespace CableWrapMonitor {
         public double WarningThresholdRotations { get; set; } = 1.0;
 
     }
+
+    /// <summary>
+    /// One point in the rotation-over-time graph. Collected in memory only —
+    /// not persisted to disk.
+    /// </summary>
+    public struct RotationSample {
+        public DateTime Timestamp { get; set; }
+        public double   Degrees   { get; set; }
+    }
 }
