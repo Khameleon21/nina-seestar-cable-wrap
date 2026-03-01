@@ -338,25 +338,22 @@ namespace CableWrapMonitor {
                         _lastTrackingSample = DateTime.UtcNow;  // baseline tracking from NOW; don't sample immediately
                         _lastBranch         = "";               // reset so transition logs fire below
 
-                        // Final tick: capture any movement between last slew tick and Slewing→false.
-                        // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
-                        // Apply the same 10° waypoint-injection cap as the live slew ticks.
-                        double postSlewAz = GetComputedAzimuth(info);
-                        if (!double.IsNaN(_prevSlewAz)) {
-                            double finalDelta = postSlewAz - _prevSlewAz;
-                            if (finalDelta >  180.0) finalDelta -= 360.0;
-                            if (finalDelta < -180.0) finalDelta += 360.0;
-                            if (Math.Abs(finalDelta) <= 10.0)
-                                _slewLiveAzAccum += finalDelta;
-                            else
-                                CwmLog($"[SLEW-SKIP] finalΔAz={finalDelta:+0.00;-0.00}° > 10° cap — skipped");
-                        }
+                        // Committed slew delta = direct pre/post Az difference.
+                        // The tick-by-tick accumulator (_slewLiveAzAccum) is unreliable for
+                        // high-altitude targets (zenith singularity amplifies Az rate by 1/cos(Alt)),
+                        // so we discard it and use state.LastKnownAzimuth (pre-slew, not updated
+                        // during slew) as the baseline and postSlewAz as the endpoint.
+                        double postSlewAz  = GetComputedAzimuth(info);
+                        double preSlewAz   = state.LastKnownAzimuth ?? postSlewAz;
+                        double commitDelta = postSlewAz - preSlewAz;
+                        if (commitDelta >  180.0) commitDelta -= 360.0;
+                        if (commitDelta < -180.0) commitDelta += 360.0;
 
-                        CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth?.ToString("F2") ?? "?"}°→{postSlewAz:F2}° " +
-                               $"(AtHome={info.AtHome}) accum={_slewLiveAzAccum:+0.00;-0.00}° " +
-                               $"total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
+                        CwmLog($"[SLEW-END] Az {preSlewAz:F2}°→{postSlewAz:F2}° (AtHome={info.AtHome}) " +
+                               $"delta={commitDelta:+0.00;-0.00}° (tick-accum={_slewLiveAzAccum:+0.00;-0.00}°) " +
+                               $"total={_preSlewTotal + commitDelta:+0.0;-0.0}°");
 
-                        Accumulate(_slewLiveAzAccum);
+                        Accumulate(commitDelta);
                         state.LastKnownAzimuth = postSlewAz;
                     }
 
