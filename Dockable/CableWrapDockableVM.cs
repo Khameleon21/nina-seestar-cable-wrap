@@ -13,6 +13,7 @@ using NINA.WPF.Base.ViewModel;
 using OxyPlot;
 using OxyPlot.Annotations;
 using OxyPlot.Axes;
+using OxyPlot.Legends;
 using OxyPlot.Series;
 
 namespace CableWrapMonitor.Dockable {
@@ -257,16 +258,18 @@ namespace CableWrapMonitor.Dockable {
 
                 // Legend — show only when 2+ laps are present
                 if (lapIdx > 1) {
-                    sp.IsLegendVisible       = true;
-                    sp.LegendPosition        = LegendPosition.RightTop;
-                    sp.LegendPlacement       = LegendPlacement.Inside;
-                    sp.LegendBackground      = OxyColor.FromArgb(140, 20, 20, 20);
-                    sp.LegendBorderThickness = 0;
-                    sp.LegendTextColor       = axisColor;
-                    sp.LegendFontSize        = 9;
-                    sp.LegendSymbolLength    = 10;
-                    sp.LegendItemSpacing     = 2;
-                    sp.LegendPadding         = 4;
+                    sp.IsLegendVisible = true;
+                    sp.Legends.Add(new Legend {
+                        LegendPosition        = LegendPosition.RightTop,
+                        LegendPlacement       = LegendPlacement.Inside,
+                        LegendBackground      = OxyColor.FromArgb(140, 20, 20, 20),
+                        LegendBorderThickness = 0,
+                        LegendTextColor       = axisColor,
+                        LegendFontSize        = 9,
+                        LegendSymbolLength    = 10,
+                        LegendItemSpacing     = 2,
+                        LegendPadding         = 4,
+                    });
                 }
             }
 
