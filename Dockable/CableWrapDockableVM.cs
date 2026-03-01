@@ -152,11 +152,20 @@ namespace CableWrapMonitor.Dockable {
             TimeSeriesModel = ts;
 
             // ── Arc model (cable position on unit circle) ─────────────────────
-            // Home = 9 o'clock (−1, 0). CW rotation = positive total = arc grows CW.
-            // Arc erases itself naturally: it always reflects the current signed total.
-            double total     = Service.TotalDegreesRotated;
-            bool overThresh  = Math.Abs(total) >= thresh;
-            OxyColor arcColor = overThresh ? warnRed : ninaBlue;
+            // Home = 9 o'clock (−1, 0). CW = positive total, arc grows CW.
+            // Each 360° lap gets a new colour drawn on top of the previous,
+            // so the overlapping segment visually shows the higher wrap number.
+            double total    = Service.TotalDegreesRotated;
+            double absTotal = Math.Abs(total);
+            double sign     = total >= 0 ? 1.0 : -1.0;
+
+            // Lap palette — each full 360° of winding gets the next colour.
+            var lapColors = new OxyColor[] {
+                ninaBlue,                      // Lap 1: blue  (safe)
+                OxyColor.Parse("#FFD700"),      // Lap 2: gold
+                OxyColor.Parse("#FF8C00"),      // Lap 3: orange
+                warnRed,                        // Lap 4+: red
+            };
 
             var sp = new PlotModel {
                 Background          = OxyColors.Transparent,
@@ -200,38 +209,65 @@ namespace CableWrapMonitor.Dockable {
             homeDot.Points.Add(new ScatterPoint(-1.0, 0.0));
             sp.Series.Add(homeDot);
 
-            // Wound arc and current position dot
-            if (Math.Abs(total) >= 0.5) {
-                // homeAngle = π (9 o'clock in standard math coords with y-up).
-                // CW on screen = decreasing math angle, so currentAngle = π − total*(π/180).
+            if (absTotal >= 0.5) {
                 double homeAngle    = Math.PI;
                 double totalRad     = total * Math.PI / 180.0;
                 double currentAngle = homeAngle - totalRad;
 
-                // One point per degree; cap at 720° (2 laps) to avoid performance issues.
-                int numPts = (int)Math.Min(Math.Ceiling(Math.Abs(total)), 720.0);
-                var arcSeries = new LineSeries {
-                    Color           = arcColor,
-                    StrokeThickness = 3.5,
-                    MarkerType      = MarkerType.None,
-                };
-                for (int i = 0; i <= numPts; i++) {
-                    double t     = (double)i / numPts;
-                    double angle = homeAngle - totalRad * t;
-                    arcSeries.Points.Add(new DataPoint(Math.Cos(angle), Math.Sin(angle)));
-                }
-                sp.Series.Add(arcSeries);
+                // Draw each 360° lap as a separate LineSeries with its own colour.
+                // Laps are drawn in order so later laps paint on top of earlier ones —
+                // the overlap region shows the colour of the highest lap, which is
+                // exactly the "colour change where the arc crosses itself" the user wants.
+                double drawnDeg = 0.0;
+                int    lapIdx   = 0;
+                while (absTotal - drawnDeg >= 0.5 && lapIdx < lapColors.Length * 2) {
+                    double lapDeg  = Math.Min(absTotal - drawnDeg, 360.0);
+                    int    numPts  = (int)Math.Ceiling(lapDeg);
+                    double startRad = drawnDeg * Math.PI / 180.0;
+                    double lapRad   = lapDeg   * Math.PI / 180.0;
+                    OxyColor lc     = lapColors[Math.Min(lapIdx, lapColors.Length - 1)];
 
-                // Current position dot
+                    var lapSeries = new LineSeries {
+                        Color           = lc,
+                        StrokeThickness = 3.5,
+                        MarkerType      = MarkerType.None,
+                        Title           = $"Wrap {lapIdx + 1}",
+                    };
+                    for (int i = 0; i <= numPts; i++) {
+                        double t     = (double)i / numPts;
+                        double angle = homeAngle - sign * (startRad + lapRad * t);
+                        lapSeries.Points.Add(new DataPoint(Math.Cos(angle), Math.Sin(angle)));
+                    }
+                    sp.Series.Add(lapSeries);
+                    drawnDeg += lapDeg;
+                    lapIdx++;
+                }
+
+                // Current position dot — colour of the last lap drawn
+                OxyColor dotColor = lapColors[Math.Min(lapIdx - 1, lapColors.Length - 1)];
                 var dot = new ScatterSeries {
                     MarkerType            = MarkerType.Circle,
                     MarkerSize            = 7,
-                    MarkerFill            = arcColor,
+                    MarkerFill            = dotColor,
                     MarkerStroke          = OxyColors.White,
                     MarkerStrokeThickness = 1.5,
                 };
                 dot.Points.Add(new ScatterPoint(Math.Cos(currentAngle), Math.Sin(currentAngle)));
                 sp.Series.Add(dot);
+
+                // Legend — show only when 2+ laps are present
+                if (lapIdx > 1) {
+                    sp.IsLegendVisible       = true;
+                    sp.LegendPosition        = LegendPosition.RightTop;
+                    sp.LegendPlacement       = LegendPlacement.Inside;
+                    sp.LegendBackground      = OxyColor.FromArgb(140, 20, 20, 20);
+                    sp.LegendBorderThickness = 0;
+                    sp.LegendTextColor       = axisColor;
+                    sp.LegendFontSize        = 9;
+                    sp.LegendSymbolLength    = 10;
+                    sp.LegendItemSpacing     = 2;
+                    sp.LegendPadding         = 4;
+                }
             }
 
             sp.InvalidatePlot(false);
