@@ -296,19 +296,26 @@ namespace CableWrapMonitor {
                     // Accumulate tick-by-tick using GetComputedAzimuth (computed from RA/Dec/LST).
                     // This is honest at home (≈180°, matching our seed) unlike info.Azimuth
                     // which reports 0° as a placeholder for several seconds after slew start.
-                    // The driver occasionally sends a target-RA waypoint 1-2 ticks early,
-                    // causing a brief ≈30° blip that self-cancels within 2 ticks (<1 second).
+                    // Ticks with |delta| > 10° are ALPACA waypoint injections — the driver
+                    // temporarily reports the target RA/Dec before the mount has moved.
+                    // We skip those ticks (but update the seed) so they don't permanently
+                    // inflate the accumulator. Physical slew steps are always <2°/tick.
                     {
                         double liveAz    = GetComputedAzimuth(info);
                         double tickDelta = liveAz - _prevSlewAz;
                         if (tickDelta >  180.0) tickDelta -= 360.0;
                         if (tickDelta < -180.0) tickDelta += 360.0;
-                        _slewLiveAzAccum     += tickDelta;
+                        if (Math.Abs(tickDelta) <= 10.0) {
+                            _slewLiveAzAccum += tickDelta;
+                        } else {
+                            CwmLog($"[SLEW-SKIP] tickΔAz={tickDelta:+0.00;-0.00}° > 10° cap — waypoint injection skipped");
+                        }
                         _prevSlewAz           = liveAz;
                         // Drive display from the same accumulator every tick.
                         _totalDegreesRotated  = _preSlewTotal + _slewLiveAzAccum;
                         RaisePropertyChanged(nameof(TotalDegreesRotated));
                         RaisePropertyChanged(nameof(WrapCount));
+                        RecordGraphSample();   // live spiral update during slew
                     }
 
                     // Periodic slew log entry (every 5 seconds)
@@ -328,17 +335,21 @@ namespace CableWrapMonitor {
                     // ── Slew just ended — commit the incremental accumulator ──────────────
                     if (_slewInProgress) {
                         _slewInProgress     = false;
-                        _lastTrackingSample = DateTime.MinValue; // reset so tracking immediately baselines
-                        _lastBranch         = "";                // reset so transition logs fire below
+                        _lastTrackingSample = DateTime.UtcNow;  // baseline tracking from NOW; don't sample immediately
+                        _lastBranch         = "";               // reset so transition logs fire below
 
                         // Final tick: capture any movement between last slew tick and Slewing→false.
                         // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
+                        // Apply the same 10° waypoint-injection cap as the live slew ticks.
                         double postSlewAz = GetComputedAzimuth(info);
                         if (!double.IsNaN(_prevSlewAz)) {
                             double finalDelta = postSlewAz - _prevSlewAz;
                             if (finalDelta >  180.0) finalDelta -= 360.0;
                             if (finalDelta < -180.0) finalDelta += 360.0;
-                            _slewLiveAzAccum += finalDelta;
+                            if (Math.Abs(finalDelta) <= 10.0)
+                                _slewLiveAzAccum += finalDelta;
+                            else
+                                CwmLog($"[SLEW-SKIP] finalΔAz={finalDelta:+0.00;-0.00}° > 10° cap — skipped");
                         }
 
                         CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth?.ToString("F2") ?? "?"}°→{postSlewAz:F2}° " +
@@ -372,8 +383,16 @@ namespace CableWrapMonitor {
                                 double delta = currentAzimuth - state.LastKnownAzimuth.Value;
                                 if (delta >  180.0) delta -= 360.0;
                                 if (delta < -180.0) delta += 360.0;
-                                Accumulate(delta);
-                                CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° (calcAz={currentAzimuth:F2}°)");
+                                // Sidereal drift is at most ~0.2° per 5-second window even near zenith.
+                                // Anything larger is a mount correction, plate-solve nudge, or driver
+                                // artifact — update the baseline without accumulating so it doesn't
+                                // permanently inflate the cable-wrap counter.
+                                if (Math.Abs(delta) <= 2.0) {
+                                    Accumulate(delta);
+                                    CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° (calcAz={currentAzimuth:F2}°)");
+                                } else {
+                                    CwmLog($"[TRACK-SKIP] Az delta={delta:+0.0}° > 2° cap — re-baselining at {currentAzimuth:F2}° (mount correction?)");
+                                }
                             } else {
                                 CwmLog($"[TRACK] Baseline set. calcAz={currentAzimuth:F2}°");
                                 TrackingStatus = TrackingStatus.Tracking;
@@ -472,9 +491,10 @@ namespace CableWrapMonitor {
             }
         }
 
-        // Adds a sample to the in-memory graph list when enough time or rotation has passed
+        // Adds a sample to the in-memory graph list when enough time or rotation has passed.
+        // Uses _totalDegreesRotated (the live display value) so slew ticks are captured too.
         private void RecordGraphSample() {
-            double   deg = state.TotalDegreesRotated;
+            double   deg = _totalDegreesRotated;
             DateTime now = DateTime.Now;
             bool timeElapsed = (now - _lastGraphSample).TotalSeconds >= 60.0;
             bool bigChange   = double.IsNaN(_lastGraphDegrees) || Math.Abs(deg - _lastGraphDegrees) >= 15.0;
