@@ -1,6 +1,6 @@
 # NINA Plugin: Seestar Cable Wrap Monitor
 
-## Status: Beta — v0.1.4, actively testing
+## Status: Active development — v0.3.9
 
 ---
 
@@ -17,14 +17,18 @@ There is currently **no logic in NINA or the ZWO ALPACA driver** to track or war
 ## The Solution
 
 A NINA plugin that:
-- Tracks RA axis rotation over time using the standard ASCOM telescope interface exposed by the ZWO ALPACA driver
-- Counts **all** RA movement — both sidereal tracking and slews (both wind the cable)
+- Tracks azimuth axis rotation in real time using the ASCOM telescope interface exposed by the ZWO ALPACA driver
+- Counts **all** rotation — both sidereal tracking and slews (both wind the cable)
 - Accumulates total rotation in degrees, bidirectionally (unwinding counts back toward zero)
-- Warns the user when the cable has wrapped past the configured threshold (default: 1 full rotation / 360°)
-- Provides a "Check Cable Wrap" sequence instruction that fails the sequence if the threshold is exceeded
+- Warns when the cable has wrapped past the configured threshold (default: 1 full rotation / 360°)
+- Displays a **time-series chart** of rotation over the session
+- Displays a **cable position arc chart** showing current wrap position on a clock face
+- Provides a **"Check Cable Wrap"** sequence instruction that halts the sequence if the threshold is exceeded
+- Provides an **"Unwind Cable"** sequence instruction that automatically slews the mount to unwind
+- Offers an **auto-unwind button** in the panel — slews the mount in reverse to unwind, then resets the counter
 - Displays a running count and timestamped history of each 360° crossing in a dockable panel
 - Persists state across NINA restarts (critical for remote use)
-- Provides a reset button for when the user has physically unwound the cable
+- Snaps the accumulator to the nearest whole wrap when the scope returns home (crash recovery)
 
 ---
 
@@ -35,10 +39,10 @@ A NINA plugin that:
 | NINA Version | 3.2 (latest stable) |
 | Telescope | ZWO Seestar S50 |
 | Driver | ZWO ALPACA Driver (exposes Seestar as ASCOM telescope) |
-| Mount type | Alt-Az, polar aligned by user, tracking via RA axis |
+| Mount type | Alt-Az, tracking via azimuth/RA axis |
 | Language | C# 12 / .NET 8 |
 | UI Framework | WPF (MVVM, consistent with NINA) |
-| NuGet package | `NINA.Plugin` 3.2.0.9001 |
+| NuGet packages | `NINA.Plugin` 3.2.0.9001, `OxyPlot.Wpf` 2.2.0 |
 
 ---
 
@@ -50,19 +54,22 @@ CableWrapMonitor/
 ├── Properties/
 │   └── AssemblyInfo.cs              # Plugin name, version, NINA metadata attributes
 ├── Plugin.cs                        # MEF export for IPluginManifest — NINA entry point
-├── CableWrapState.cs                # CableWrapState, WrapHistoryEntry, CableWrapSettings
-│                                    # (JSON-serializable models for disk persistence)
-├── CableWrapService.cs              # Core logic: polls RA every 1 s, accumulates delta,
-│                                    # saves state every 10 s, fires alerts
+├── CableWrapState.cs                # CableWrapState, WrapHistoryEntry, CableWrapSettings,
+│                                    # RotationSample — JSON-serializable models + graph data
+├── CableWrapService.cs              # Core logic: ITelescopeConsumer, rotation accumulation,
+│                                    # slew/track/stopped state machine, auto-unwind, snap-to-home
 ├── Dockable/
 │   ├── CableWrapDockableVM.cs       # Panel ViewModel — MEF [Export(typeof(IDockableVM))]
-│   ├── CableWrapDockable.xaml       # Panel UI (status, rotation, wrap count, history, reset)
+│   │                                # OxyPlot chart models (time-series + arc), Reset/Unwind commands
+│   ├── CableWrapDockable.xaml       # Panel UI: status, rotation, wrap count, threshold,
+│   │                                # time-series chart, cable position arc chart, history, buttons
 │   └── CableWrapDockable.xaml.cs   # Code-behind (InitializeComponent only)
 ├── SequenceItems/
 │   ├── CheckCableWrapInstruction.cs # Sequence item — fails if wrap > threshold
 │   ├── CheckCableWrapInstructionView.xaml
-│   └── CheckCableWrapInstructionView.xaml.cs
-├── Resources.xaml                   # DataTemplates + sequence icon, merged into NINA
+│   ├── UnwindCableInstruction.cs    # Sequence item — auto-unwinds cable via slews
+│   └── UnwindCableInstructionView.xaml
+├── Resources.xaml                   # DataTemplates + sequence icons, merged into NINA
 └── Resources.xaml.cs                # MEF [Export(typeof(ResourceDictionary))]
 ```
 
@@ -71,59 +78,82 @@ CableWrapMonitor/
 ## Architecture Notes
 
 ### MEF Composition
-NINA uses traditional MEF (`System.ComponentModel.Composition`) for plugin discovery. Three parts are exported:
+NINA uses traditional MEF (`System.ComponentModel.Composition`) for plugin discovery. The following parts are exported:
 
 | Class | Export type | Role |
 |---|---|---|
 | `CableWrapMonitorPlugin` | `IPluginManifest` | Registers the plugin with NINA |
-| `CableWrapService` | (self, shared) | Singleton injected into the VM and instruction |
+| `CableWrapService` | `ITelescopeConsumer` (shared) | Receives telescope data pushes from NINA |
 | `CableWrapDockableVM` | `IDockableVM` | Discovered by NINA's docking manager |
 | `CheckCableWrapInstruction` | `ISequenceItem` | Appears in the sequencer's instruction list |
+| `UnwindCableInstruction` | `ISequenceItem` | Appears in the sequencer's instruction list |
 | `Resources` | `ResourceDictionary` | DataTemplates merged into NINA's app resources |
 
-### CableWrapService
-The heart of the plugin. Injected with `ITelescopeMediator` by MEF. Runs a 1-second timer. On each tick:
-1. Calls `telescopeMediator.GetInfo()`
-2. Checks `Connected` — if false, sets NotConnected, clears both baselines, returns
-3. Checks `TrackingEnabled || Slewing` — if neither, sets Stopped status, returns
-4. **If slewing**: samples `RightAscension`, computes RA delta (×15°/hr), accumulates every tick
-5. **If tracking**: samples `Azimuth`, computes azimuth delta, accumulates every 5 ticks
-6. Logs each 360° crossing to history
-7. Saves full state to JSON every ~10 processed ticks
+### CableWrapService — Data Source
+Rather than polling on a timer, the service implements `ITelescopeConsumer`. NINA calls `UpdateDeviceInfo()` at its native rate (several Hz), pushing a `TelescopeInfo` snapshot each tick. This eliminates polling overhead and ensures the plugin reacts at the same rate as the rest of NINA.
 
-### Why the Hybrid Approach
-The Seestar ALPACA driver behaves differently depending on mount state:
+### State Machine
+On each `UpdateDeviceInfo()` call the service branches into one of three states:
 
-| State | Use | Why |
+| State | Condition | What happens |
 |---|---|---|
-| Slewing | `RightAscension` | Azimuth reports erratic values during slews |
-| Tracking | `Azimuth` | RA is held *constant* during tracking by definition — it never changes |
+| **Not Connected** | `info.Connected == false` | Resets all baselines, sets gray status |
+| **Slewing** | `info.Slewing == true` | Accumulates `GetComputedAzimuth()` delta per tick, drives live display |
+| **Tracking** | `info.TrackingEnabled == true` | Samples azimuth every 5 seconds, accumulates delta |
+| **Stopped** | All other | Updates `LastKnownAzimuth` baseline; fires at-home snap if scope just returned home |
 
-When a slew ends, the azimuth baseline resets so tracking picks up cleanly from the new position. When tracking ends and a slew begins, the RA baseline resets for the same reason.
+### ALPACA Driver Quirks
+The ZWO ALPACA driver has two known behaviours the plugin works around:
 
-### What Gets Counted
-- **Slews between targets** — often the dominant contribution; mount sometimes takes the long way around (300+ degrees in one slew)
-- **Sidereal tracking** — ~15°/hour; over a 6-hour night adds ~90°
+1. **`info.Azimuth = 0°` when at home** — the driver reports `0°` as a placeholder when the scope is at its home position. The real home azimuth for the Seestar S50 is approximately `180°` (scope points south). The plugin uses `GetComputedAzimuth()` (calculated from RA/Dec + observer location) instead of `info.Azimuth` for all baseline and stopped-state reads.
+
+2. **Azimuth unreliable during slews** — `info.Azimuth` reports erratic values mid-slew (observed: `-440°`). The plugin uses `GetComputedAzimuth()` throughout slews as well.
+
+### At-Home Snap
+When the scope returns to home after a slew or park, the service fires `SnapToHomePosition()`:
+- Rounds `TotalDegreesRotated` to the nearest whole number of full rotations (`Math.Round(total / 360.0) * 360.0`)
+- This corrects minor accumulator drift and is the primary crash-recovery mechanism — if NINA crashed mid-session, the stale value in `state.json` gets corrected the next time the scope parks at home
+
+### Auto-Unwind
+The "Unwind Cable Automatically" button (and `UnwindCableInstruction` sequence item) calls `UnwindAsync()`:
+1. Slews to a safe position near the meridian at Dec +80°
+2. Steps through the accumulated rotation in ≤60° increments, slewing in reverse
+3. Sends the scope home via `FindHome()`
+4. Calls `Reset()` to zero the counter and record a history entry
+
+### Charts
+Both charts update whenever a new graph sample is recorded:
+
+| Chart | What it shows |
+|---|---|
+| **Rotation Tonight** (time-series) | Total degrees rotated vs time, with threshold lines |
+| **Cable Position** (arc) | Current position on a clock face — home = 9 o'clock, CW = positive rotation; each 360° lap changes colour (blue → gold → orange → red) |
 
 ### Tracking Status
+
 | Status | Dot colour | Meaning |
 |---|---|---|
 | Not Connected | Gray | Telescope not connected in NINA |
-| Not Tracking | Blue | Connected but not tracking or slewing (at home/park) |
+| Not Tracking | Blue | Connected but not tracking or slewing (at home / parked) |
 | Tracking | Green | Connected and actively tracking or slewing |
-| ⚠ WRAP WARNING | Red | Accumulated rotation exceeds the threshold |
+| ⚠ WRAP WARNING | Red | Accumulated rotation exceeds the configured threshold |
 
 ### State Persistence
 Two JSON files under `%LOCALAPPDATA%\NINA\Plugins\CableWrapMonitor\`:
-- `state.json` — accumulator, last known RA, wrap history (last 1 hour), alert-fired flag
-- `settings.json` — warning threshold (rotations)
+- `state.json` — accumulator, last known azimuth, wrap history (last 1 hour), alert-fired flag
+- `settings.json` — warning threshold in rotations
 
 State is loaded on service construction, so tracking resumes seamlessly after a NINA restart.
 
-### Sequence Instruction
-`CheckCableWrapInstruction` is inserted into a NINA Advanced Sequence. When executed:
-- If `|TotalDegreesRotated| < threshold` → succeeds silently, sequence continues
-- If threshold exceeded → throws `Exception`, sequence stops
+### Sequence Instructions
+
+**Check Cable Wrap** — insert between imaging targets in an Advanced Sequence:
+- `|TotalDegreesRotated| < threshold` → succeeds silently, sequence continues
+- Threshold exceeded → throws `Exception`, NINA marks the item Failed and halts the sequence
+
+**Unwind Cable** — insert in a sequence to automatically unwind before a critical phase:
+- If `|TotalDegreesRotated| < 10°` → skips silently (nothing to unwind)
+- Otherwise calls `UnwindAsync()` — slews the mount in reverse to unwind, then resets counter
 
 ---
 
@@ -142,41 +172,44 @@ To update after a `git pull`: repeat steps 3–6.
 
 ## Versioning
 
-| Version | Meaning |
+| Version range | Meaning |
 |---|---|
-| `0.1.x` | Beta — bug fixes and tuning, no new features |
-| `0.2.0` | First new feature added after beta |
+| `0.1.x` | Initial beta |
+| `0.2.x` | ITelescopeConsumer architecture, slew/track/stopped state machine |
+| `0.3.x` | OxyPlot charts, auto-unwind, Unwind sequence item |
 | `1.0.0` | Stable release |
 
-Version is set in `Properties/AssemblyInfo.cs`. Bump the patch digit (`x`) on every change.
+Version is set in `Properties/AssemblyInfo.cs` (both `AssemblyVersion` and `AssemblyFileVersion`). Bump the patch digit on every change.
 
 ---
 
 ## Known Limitations
 
-- **Slew path variance**: The mount occasionally takes the long way around when slewing between targets (e.g. 300+ degrees instead of 60). This is real cable movement and is correctly counted, but means a single unlucky slew can consume most of your threshold budget. Set the threshold to 1.5–2.0 rotations if this happens frequently.
-- **Sidereal accumulation precision**: The ALPACA driver may cache the RA value and not update at exactly 1Hz. Sidereal drift accumulation (15°/hr) is approximate.
-- **No toast notifications**: The NINA 3.2 plugin API does not expose a public notification class. Alerts appear in the NINA log and as a red indicator in the panel. Use the sequence instruction for automated halting.
-- **No direct sequence pause**: NINA's plugin API does not allow a background service to cancel a running sequence. Use the "Check Cable Wrap" sequence instruction between imaging targets instead.
+- **No toast notifications**: The NINA 3.2 plugin API does not expose a public notification class. Alerts appear in the NINA log and as a red indicator in the panel. Use the "Check Cable Wrap" sequence instruction for automated halting.
+- **No direct sequence pause from background service**: Use the "Check Cable Wrap" sequence instruction between imaging targets instead.
+- **FindHome motion not accumulated**: The Seestar ALPACA driver does not set `Slewing=true` during `FindHome()` or `Park()` motion. The at-home snap corrects any residual drift when the scope arrives at home.
+- **Seestar-specific**: The ALPACA quirks worked around here (`info.Azimuth = 0°` at home, erratic mid-slew azimuth) may not apply to other telescopes. The plugin has only been tested against the ZWO Seestar S50 ALPACA driver.
 
 ---
 
-## Functional Requirements
+## Functional Checklist
 
-- [x] RA axis rotation tracking with 0h/24h wraparound handling
+- [x] Azimuth axis rotation tracking using ITelescopeConsumer
 - [x] All rotation counted — tracking and slews
 - [x] Signed accumulator (clockwise positive, counter-clockwise negative)
 - [x] Wrap count display as decimal fraction of full rotations
 - [x] Timestamped wrap history (last 1 hour)
 - [x] Warning threshold configurable from 0.5 to 3.0 rotations (default 1.0)
 - [x] Alert fires once per threshold crossing, not every poll cycle
-- [x] State persisted to JSON every 10 seconds
-- [x] State loaded on startup — survives NINA restarts
-- [x] "Reset — Cable Unwound" button with Yes/No confirmation
-- [x] Reset records a manual-reset entry in the history
-- [x] Dockable panel with status indicator, rotation, wrap count, editable threshold, history list
-- [x] Not Connected / Not Tracking / Tracking / Warning status indicator
-- [x] "Check Cable Wrap" sequence instruction that fails sequence on threshold breach
+- [x] State persisted to JSON; loaded on startup — survives NINA restarts and crashes
+- [x] At-home snap for crash recovery
+- [x] "Reset — Cable Unwound" button with confirmation dialog
+- [x] "Unwind Cable Automatically" button — reverses mount to unwind cable
+- [x] Dockable panel with status, rotation, wrap count, threshold, charts, history, buttons
+- [x] Time-series chart (rotation over session)
+- [x] Cable position arc chart (clock-face, colour-coded by lap)
+- [x] Movement direction indicator (↻ CW / ↺ CCW) while slewing
+- [x] "Check Cable Wrap" sequence instruction — halts sequence on threshold breach
+- [x] "Unwind Cable" sequence instruction — auto-unwinds in a running sequence
 - [ ] Toast notifications (NINA 3.2 API limitation)
 - [ ] Direct sequence pause from background service (NINA API limitation)
-
