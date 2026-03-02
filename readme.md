@@ -157,6 +157,71 @@ State is loaded on service construction, so tracking resumes seamlessly after a 
 
 ---
 
+## Version History
+
+### v0.3.x — Charts and auto-unwind
+
+| Version | Change |
+|---|---|
+| **v0.3.9** | Move arc chart legend outside OxyPlot into a XAML StackPanel — no more overlap with arc |
+| **v0.3.8** | Always-visible legend using ghost series — was hidden until 2+ laps accumulated |
+| **v0.3.7** | Fix OxyPlot 2.2.0 Legend API — `sp.Legends.Add(new Legend {...})` replaces removed PlotModel properties |
+| **v0.3.6** | Multi-lap arc colouring — each 360° lap changes colour (blue → gold → orange → red) |
+| **v0.3.5** | Replace outward spiral with arc on unit circle — home at 9 o'clock, CW positive, arc retraces on unwind |
+| **v0.3.4** | Revert zenith fix — tick accumulator was correct; scope physically loops 400°+ in high-altitude slews |
+| **v0.3.3** | Attempted zenith-singularity fix via pre/post Az diff (reverted — wrong for full-loop slews) |
+| **v0.3.2** | Fix tracking over-accumulation; live chart updates during slews |
+| **v0.3.1** | Remove explicit OxyPlot.Wpf pin — NINA already provides 2.2.0 transitively |
+| **v0.3.0** | Add OxyPlot time-series and spiral cable-wrap charts |
+
+### v0.2.x — ITelescopeConsumer architecture
+
+| Version | Change |
+|---|---|
+| **v0.2.27** | Drop separate display accumulator — single `GetComputedAzimuth()` accumulator drives both commit and live display |
+| **v0.2.26** | Fix home-position Az baseline — ALPACA reports `0°` at home (lie); use `GetComputedAzimuth()` (≈180°) instead |
+| **v0.2.25** | Use driver Az for live slew display; add periodic slew log entries |
+| **v0.2.24** | Delay live slew display until direction confirmed — skip waypoint spike on tick 1 |
+| **v0.2.23** | Freeze display during slews — driver waypoint injection was corrupting live total |
+| **v0.2.22** | Re-enable live display during slews via ITelescopeConsumer data |
+| **v0.2.21** | Switch to `ITelescopeConsumer` — receive same live telescope data as NINA UI panels; remove poll timer |
+| **v0.2.20** | Remove live slew display — driver waypoints made it unreliable (later restored in v0.2.22) |
+| **v0.2.19** | Add per-tick slew logging for diagnostics |
+| **v0.2.18** | Fix slew tracking — incremental Az accumulation, remove direction-sign math |
+| **v0.2.17** | Live total rotation display during slews using computed Az |
+| **v0.2.16** | Use `GetComputedAzimuth()` everywhere; lower snap threshold to 0.001° |
+| **v0.2.15** | Use `AtHome=0°` override for post-slew Az when scope arrives home |
+| **v0.2.14** | Use RA for slew direction indicator instead of early Az samples |
+| **v0.2.13** | Catch-up sample on stop; settle delay before snap; movement direction indicator (↻/↺) |
+| **v0.2.12** | Add early-azimuth direction detection for slew tracking |
+| **v0.2.11** | Fix slew tracking — use before/after azimuth instead of RA delta |
+| **v0.2.10** | Fix snap not firing on sub-1° residuals at home |
+| **v0.2.9** | Add dedicated rolling log file (`cwm-YYYY-MM-DD.log`) |
+| **v0.2.8** | Fix snap firing too early during FindHome |
+| **v0.2.7** | Track park motion; snap wrap to nearest whole rotation on home arrival |
+| **v0.2.5** | Reduce settle delays from 2000ms to 500ms during unwind |
+| **v0.2.4** | Fix unwind direction |
+| **v0.2.3** | Suppress poll timer during unwind; manually track unwind progress |
+| **v0.2.2** | Fix unwind direction (increase RA to unwind positive wrap) |
+| **v0.2.1** | Fix unwind below-horizon error |
+| **v0.2.0** | Add auto-unwind feature (`UnwindAsync()`); remove AtHome snap (restored in v0.2.7) |
+
+### v0.1.x — Initial beta
+
+| Version | Change |
+|---|---|
+| **v0.1.11** | Auto-unwind feature first attempt |
+| **v0.1.7** | Fix sequence item category — was not appearing in NINA Advanced Sequencer |
+| **v0.1.6** | Fix drift display rounding error in snap message |
+| **v0.1.5** | Snap accumulator to nearest whole wrap when scope returns home |
+| **v0.1.4** | Hybrid tracking: RA for slews, Azimuth for sidereal tracking |
+| **v0.1.3** | Switch from `RightAscension` to `Azimuth` for rotation tracking |
+| **v0.1.2** | Variable poll rate: 1s during slews, 5s during tracking |
+| **v0.1.1** | Initial versioning and readme |
+| **v0.1.0** | Initial beta release |
+
+---
+
 ## Build Instructions
 
 1. Clone the repo on the Windows PC running NINA
