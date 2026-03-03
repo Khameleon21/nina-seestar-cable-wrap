@@ -318,34 +318,48 @@ namespace CableWrapMonitor {
                         _lastTrackingSample = DateTime.UtcNow;
                         _lastBranch         = "";
 
-                        // Post-slew Az is reliable now the scope has stopped.
+                        // Always update LastKnownAzimuth to the current computed Az so the
+                        // STOPPED branch's catch-up sees a ~0° delta and stays silent.
                         double postSlewAz = GetComputedAzimuth(info);
                         state.LastKnownAzimuth = postSlewAz;
 
-                        // Endpoint formula: use pre/post Az + detected direction.
-                        // CW arc:  (postAz - preAz + 360°) mod 360°  → always positive
-                        // CCW arc: (preAz - postAz + 360°) mod 360°  → negated → negative
-                        // Both give the actual arc traversed in that direction, regardless
-                        // of whether it was the short or long path.
-                        double endpointDelta;
-                        if (_slewDirectionSign >= 0) {  // CW
-                            endpointDelta = ((postSlewAz - _preSlewAz) % 360.0 + 360.0) % 360.0;
-                            if (endpointDelta > 359.0) endpointDelta = 0.0;
-                        } else {                        // CCW
-                            endpointDelta = -((_preSlewAz - postSlewAz) % 360.0 + 360.0) % 360.0;
-                            if (endpointDelta < -359.0) endpointDelta = 0.0;
+                        if (info.AtHome) {
+                            // Home return — the ALPACA driver Az goes spuriously to ~180° as
+                            // soon as the scope starts heading home, long before it arrives.
+                            // The live accumulation and endpoint formula are therefore garbage.
+                            // The correct answer: scope at home ⟹ cable at mechanical zero
+                            // ⟹ total must be a whole-wrap multiple. Restore pre-slew total
+                            // and snap immediately (no 5-second settle needed).
+                            state.TotalDegreesRotated = _preSlewTotal;
+                            _totalDegreesRotated      = _preSlewTotal;
+                            CwmLog($"[SLEW-END→HOME] preSlewAz={_preSlewAz:F2}° postAz={postSlewAz:F2}° " +
+                                   $"liveAccum={_slewLiveAccum:+0.1;-0.1}° — Az data garbage during home slew; snapping.");
+                            SnapToHomePosition();
+                        } else {
+                            // Normal target slew — Az data was reliable. Use direction-based
+                            // endpoint formula: pre/post Az + detected direction.
+                            // CW arc:  (postAz - preAz + 360°) mod 360°  → always positive
+                            // CCW arc: (preAz - postAz + 360°) mod 360°  → negated → negative
+                            double endpointDelta;
+                            if (_slewDirectionSign >= 0) {  // CW
+                                endpointDelta = ((postSlewAz - _preSlewAz) % 360.0 + 360.0) % 360.0;
+                                if (endpointDelta > 359.0) endpointDelta = 0.0;
+                            } else {                        // CCW
+                                endpointDelta = -((_preSlewAz - postSlewAz) % 360.0 + 360.0) % 360.0;
+                                if (endpointDelta < -359.0) endpointDelta = 0.0;
+                            }
+
+                            // Restore state to pre-slew total, then commit the correct delta.
+                            // This eliminates any overshoot accumulated in the live display.
+                            state.TotalDegreesRotated = _preSlewTotal;
+                            _totalDegreesRotated      = _preSlewTotal;
+                            Accumulate(endpointDelta);
+
+                            CwmLog($"[SLEW-END] preSlewAz={_preSlewAz:F2}° postAz={postSlewAz:F2}° rawAz={info.Azimuth:F2}° " +
+                                   $"dir={(_slewDirectionSign >= 0 ? "CW" : "CCW")} " +
+                                   $"liveAccum={_slewLiveAccum:+0.1;-0.1}° endpoint={endpointDelta:+0.1;-0.1}° " +
+                                   $"total={TotalDegreesRotated:+0.0;-0.0}°");
                         }
-
-                        // Restore state to pre-slew total, then commit the correct delta.
-                        // This eliminates any overshoot accumulated in the live display.
-                        state.TotalDegreesRotated = _preSlewTotal;
-                        _totalDegreesRotated      = _preSlewTotal;
-                        Accumulate(endpointDelta);
-
-                        CwmLog($"[SLEW-END] preSlewAz={_preSlewAz:F2}° postAz={postSlewAz:F2}° rawAz={info.Azimuth:F2}° " +
-                               $"dir={(_slewDirectionSign >= 0 ? "CW" : "CCW")} " +
-                               $"liveAccum={_slewLiveAccum:+0.1;-0.1}° endpoint={endpointDelta:+0.1;-0.1}° " +
-                               $"total={TotalDegreesRotated:+0.0;-0.0}°");
                     }
 
                     if (info.TrackingEnabled) {
