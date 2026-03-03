@@ -276,7 +276,7 @@ namespace CableWrapMonitor {
                         _prevSlewAz        = state.LastKnownAzimuth.HasValue
                                              ? state.LastKnownAzimuth.Value
                                              : GetComputedAzimuth(info);
-                        CwmLog($"[→SLEW] Slew started. Pre-slew Az={_prevSlewAz:F2}° RA={_preSlewRA:F3}h");
+                        CwmLog($"[→SLEW] Slew started. Pre-slew calcAz={_prevSlewAz:F2}° rawAz={info.Azimuth:F2}° RA={_preSlewRA:F3}h");
                         _lastBranch = "SLEW";
                     }
 
@@ -316,7 +316,7 @@ namespace CableWrapMonitor {
                     // Periodic slew log entry (every 5 seconds)
                     if ((DateTime.UtcNow - _lastSlewLog).TotalSeconds >= 5.0) {
                         _lastSlewLog = DateTime.UtcNow;
-                        CwmLog($"[SLEW] calcAz={_prevSlewAz:F2}° accum={_slewLiveAzAccum:+0.0;-0.0}° " +
+                        CwmLog($"[SLEW] calcAz={_prevSlewAz:F2}° rawAz={info.Azimuth:F2}° accum={_slewLiveAzAccum:+0.0;-0.0}° " +
                                $"total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
                     }
 
@@ -342,9 +342,9 @@ namespace CableWrapMonitor {
                             _slewLiveAzAccum += finalDelta;
                         }
 
-                        CwmLog($"[SLEW-END] Az {state.LastKnownAzimuth?.ToString("F2") ?? "?"}°→{postSlewAz:F2}° " +
-                               $"(AtHome={info.AtHome}) accum={_slewLiveAzAccum:+0.00;-0.00}° " +
-                               $"total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
+                        CwmLog($"[SLEW-END] calcAz {state.LastKnownAzimuth?.ToString("F2") ?? "?"}°→{postSlewAz:F2}° " +
+                               $"rawAz={info.Azimuth:F2}° (AtHome={info.AtHome}) " +
+                               $"accum={_slewLiveAzAccum:+0.00;-0.00}° total={_preSlewTotal + _slewLiveAzAccum:+0.0;-0.0}°");
 
                         Accumulate(_slewLiveAzAccum);
                         state.LastKnownAzimuth = postSlewAz;
