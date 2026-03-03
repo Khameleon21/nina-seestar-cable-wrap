@@ -290,22 +290,27 @@ namespace CableWrapMonitor {
                     double currentSlewHA = GetCurrentHA(info);
 
                     // Direction detection: skip tick 0 (likely waypoint), detect from RA change.
-                    // Decreasing RA → westward → HA increases → CW.
+                    // Empirically: RA increases → CW; RA decreases → CCW (Seestar polar mount).
                     if (_slewDirectionSign == 0 && _slewTickCount >= 2) {
                         double raChange = info.RightAscension - _preSlewRA;
                         if (Math.Abs(raChange) >= 0.05)
-                            _slewDirectionSign = raChange < 0 ? +1 : -1;
+                            _slewDirectionSign = raChange < 0 ? -1 : +1;
                     }
 
                     // Live display: tick-by-tick HA deltas from tick 2+ (skip tick 1 waypoint).
                     // Per-tick deltas are small so ±180° wrap is safe here.
+                    // _prevSlewHA must NOT be updated on tick 1 — the driver injects a waypoint
+                    // HA that is far from the real value, causing a huge spurious delta on tick 2.
+                    // By keeping _prevSlewHA = _preSlewHA through tick 1, tick 2's delta is the
+                    // real motion from slew-start to tick 2 (a small, correct number).
                     if (_slewTickCount >= 2) {
                         double liveHADelta = currentSlewHA - _prevSlewHA;
                         if (liveHADelta >  180.0) liveHADelta -= 360.0;
                         if (liveHADelta < -180.0) liveHADelta += 360.0;
                         _slewLiveAccum += liveHADelta;
+                        _prevSlewHA = currentSlewHA;
                     }
-                    _prevSlewHA = currentSlewHA;
+                    // tick 1: _prevSlewHA intentionally not updated (stays at _preSlewHA)
 
                     _totalDegreesRotated = _preSlewTotal + _slewLiveAccum;
                     RaisePropertyChanged(nameof(TotalDegreesRotated));
