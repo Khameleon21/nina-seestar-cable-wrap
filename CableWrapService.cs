@@ -289,13 +289,13 @@ namespace CableWrapMonitor {
                     _slewTickCount++;
                     double currentSlewHA = GetCurrentHA(info);
 
-                    // Direction detection: skip tick 0 (likely waypoint), detect from RA change.
-                    // Empirically: RA increases → CW; RA decreases → CCW (Seestar polar mount).
-                    if (_slewDirectionSign == 0 && _slewTickCount >= 2) {
-                        double raChange = info.RightAscension - _preSlewRA;
-                        if (Math.Abs(raChange) >= 0.05)
-                            _slewDirectionSign = raChange < 0 ? -1 : +1;
-                    }
+                    // Direction detection: use sign of liveAccum (actual HA motion).
+                    // RA-based detection fails for slews crossing the 24h/0h boundary —
+                    // RA passes through waypoint values that don't reflect final direction.
+                    // liveAccum integrates real HA deltas tick-by-tick and is unambiguous
+                    // once ≥2° of motion has accumulated (typically by tick 3).
+                    if (_slewDirectionSign == 0 && Math.Abs(_slewLiveAccum) >= 2.0)
+                        _slewDirectionSign = _slewLiveAccum > 0 ? +1 : -1;
 
                     // Live display: tick-by-tick HA deltas from tick 2+ (skip tick 1 waypoint).
                     // Per-tick deltas are small so ±180° wrap is safe here.
@@ -341,34 +341,31 @@ namespace CableWrapMonitor {
                         state.LastKnownHA = postHA;
 
                         if (info.AtHome) {
-                            // Home return — use snap. The cable is at mechanical zero so the
-                            // total must be a whole-wrap multiple. Restore pre-slew baseline
-                            // and snap immediately (no 5-second settle needed).
-                            state.TotalDegreesRotated = _preSlewTotal;
-                            _totalDegreesRotated      = _preSlewTotal;
+                            // Home return — commit liveAccum first, THEN snap.
+                            // preSlewTotal + liveAccum ≈ 0° (or n×360°) because the return
+                            // slew retraces the outward slew. Snapping preSlewTotal alone
+                            // (ignoring liveAccum) would snap to the wrong wrap multiple.
+                            double homeTotal = _preSlewTotal + _slewLiveAccum;
+                            state.TotalDegreesRotated = homeTotal;
+                            _totalDegreesRotated      = homeTotal;
                             CwmLog($"[SLEW-END→HOME] preSlewHA={_preSlewHA:F2}° postHA={postHA:F2}° " +
-                                   $"RA={info.RightAscension:F4}h — snapping to whole wrap.");
+                                   $"liveAccum={_slewLiveAccum:+0.1;-0.1}° homeTotal={homeTotal:+0.1;-0.1}° — snapping.");
                             SnapToHomePosition();
                         } else {
-                            // Normal target slew — use ΔRA to determine direction, then
-                            // apply the always-positive (CW) or always-negative (CCW) arc
-                            // formula. The ±180° short-arc correction is WRONG for slews
-                            // larger than 180°, so direction must resolve the ambiguity.
-                            double deltaRA = info.RightAscension - _preSlewRA;
-                            if (deltaRA >  12.0) deltaRA -= 24.0;  // normalise to ±12h
-                            if (deltaRA < -12.0) deltaRA += 24.0;
-
+                            // Normal target slew — use liveAccum sign (= physical HA direction)
+                            // to choose CW or CCW arc. ΔRA-based detection fails for slews that
+                            // cross the 24h/0h boundary; liveAccum is always correct.
                             double endpointDelta;
-                            if (deltaRA < -0.001) {
-                                // RA decreased → westward → HA increases → CW → positive arc
+                            if (_slewDirectionSign > 0) {
+                                // CW: HA increased — always-positive arc
                                 endpointDelta = ((postHA - _preSlewHA) % 360.0 + 360.0) % 360.0;
                                 if (endpointDelta > 359.5) endpointDelta = 0.0;
-                            } else if (deltaRA > 0.001) {
-                                // RA increased → eastward → HA decreases → CCW → negative arc
+                            } else if (_slewDirectionSign < 0) {
+                                // CCW: HA decreased — always-negative arc
                                 endpointDelta = -((_preSlewHA - postHA) % 360.0 + 360.0) % 360.0;
                                 if (endpointDelta < -359.5) endpointDelta = 0.0;
                             } else {
-                                endpointDelta = 0.0; // no significant RA change
+                                endpointDelta = 0.0; // direction not established (very short slew)
                             }
 
                             // Restore to pre-slew total, then commit the correct delta.
@@ -377,7 +374,7 @@ namespace CableWrapMonitor {
                             Accumulate(endpointDelta);
 
                             CwmLog($"[SLEW-END] preSlewHA={_preSlewHA:F2}° postHA={postHA:F2}° " +
-                                   $"ΔRA={deltaRA:+0.000;-0.000}h RA={info.RightAscension:F4}h " +
+                                   $"dir={(_slewDirectionSign > 0 ? "CW" : _slewDirectionSign < 0 ? "CCW" : "?")} " +
                                    $"endpoint={endpointDelta:+0.1;-0.1}° total={TotalDegreesRotated:+0.0;-0.0}°");
                         }
                     }
