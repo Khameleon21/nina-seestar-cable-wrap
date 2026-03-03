@@ -18,18 +18,12 @@ namespace CableWrapMonitor {
         public double TotalDegreesRotated { get; set; } = 0.0;
 
         /// <summary>
-        /// The telescope RA (in hours, 0–24) read during the last slew tick.
-        /// Used only while the scope is slewing. Null = baseline not yet established.
+        /// Hour angle (LST − RA) × 15, normalised to 0–360°, at the last sample.
+        /// Used as baseline for both tracking and slew-endpoint commits.
+        /// Null = baseline not yet established.
         /// </summary>
         [JsonProperty]
-        public double? LastKnownRA { get; set; } = null;
-
-        /// <summary>
-        /// The telescope azimuth (in degrees, 0–360) read during the last tracking tick.
-        /// Used only while the scope is tracking. Null = baseline not yet established.
-        /// </summary>
-        [JsonProperty]
-        public double? LastKnownAzimuth { get; set; } = null;
+        public double? LastKnownHA { get; set; } = null;
 
         /// <summary>
         /// The UTC time at which the user last reset the counter.

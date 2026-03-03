@@ -70,9 +70,9 @@ namespace CableWrapMonitor {
         private bool              _slewInProgress     = false;
         private int               _slewDirectionSign  = 0;      // +1=CW, -1=CCW, 0=unknown
         private double            _preSlewTotal       = 0;      // TotalDegreesRotated at slew start
-        private double            _preSlewAz          = double.NaN; // reliable Az at slew start (from stopped state)
-        private double            _prevSlewAz         = double.NaN; // rawAz at previous tick (for per-tick delta)
-        private double            _slewLiveAccum      = 0;      // negated tick accumulation shown live during slew
+        private double            _preSlewHA          = double.NaN; // HA (degrees) at slew start
+        private double            _preSlewRA          = double.NaN; // RA (hours) at slew start — direction detection
+        private int               _slewTickCount      = 0;      // ticks since slew started (skip tick 0 for direction)
         private DateTime          _lastSlewLog        = DateTime.MinValue;
         private bool              _isMoving           = false;
         private string            _movementIndicator  = "";
@@ -240,15 +240,14 @@ namespace CableWrapMonitor {
                         _lastBranch = "DISC";
                     }
                     TrackingStatus         = TrackingStatus.NotConnected;
-                    state.LastKnownRA      = null;
-                    state.LastKnownAzimuth = null;
+                    state.LastKnownHA      = null;
                     _wasAtHome             = false;
                     _slewInProgress        = false;
                     _slewDirectionSign     = 0;
+                    _slewTickCount         = 0;
                     _preSlewTotal          = 0;
-                    _preSlewAz             = double.NaN;
-                    _prevSlewAz            = double.NaN;
-                    _slewLiveAccum         = 0;
+                    _preSlewHA             = double.NaN;
+                    _preSlewRA             = double.NaN;
                     _atHomeArrivalTime     = DateTime.MinValue;
                     IsMoving               = false;
                     MovementIndicator      = "";
@@ -257,53 +256,46 @@ namespace CableWrapMonitor {
 
                 if (info.Slewing) {
                     // ── SLEW MODE ────────────────────────────────────────────────────────
-                    // The ALPACA driver's Az during slews moves in the OPPOSITE direction
-                    // to physical rotation: when the scope slews CW, driver Az decreases
-                    // (CCW). We negate each tick's delta to get the physical direction.
+                    // For a polar-mounted scope, physical rotation = change in Hour Angle.
+                    // HA = (LST − RA) × 15°.
                     //
-                    // Live display accumulates negated ticks so the user sees progress.
-                    // State is NOT updated during the slew. At slew-end, an endpoint
-                    // formula using direction + real pre/post Az commits the correct value,
-                    // eliminating the driver overshoot/snap that occurs at slew end.
+                    // The driver RA/LST is unreliable mid-slew (waypoint injection on tick 1
+                    // causes a large spike). We therefore freeze the live display at the
+                    // pre-slew total and commit the correct endpoint ΔHA at slew-end, when
+                    // the scope is settled and RA is accurate again.
                     _wasAtHome         = false;
                     _atHomeArrivalTime = DateTime.MinValue;
 
                     if (!_slewInProgress) {
                         _slewInProgress    = true;
                         _slewDirectionSign = 0;
-                        _slewLiveAccum     = 0;
+                        _slewTickCount     = 0;
                         _preSlewTotal      = state.TotalDegreesRotated;
-                        _preSlewAz         = state.LastKnownAzimuth ?? GetComputedAzimuth(info);
-                        _prevSlewAz        = info.Azimuth;   // seed for per-tick delta
+                        _preSlewHA         = state.LastKnownHA ?? GetCurrentHA(info);
+                        _preSlewRA         = info.RightAscension;
                         _lastSlewLog       = DateTime.UtcNow;
-                        CwmLog($"[→SLEW] Slew started. preSlewAz={_preSlewAz:F2}° rawAz={info.Azimuth:F2}° preSlewTotal={_preSlewTotal:+0.1;-0.1}°");
+                        CwmLog($"[→SLEW] Slew started. preSlewHA={_preSlewHA:F2}° " +
+                               $"RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h " +
+                               $"preSlewTotal={_preSlewTotal:+0.1;-0.1}°");
                         _lastBranch = "SLEW";
                     }
 
-                    // Per-tick delta from rawAz, negated because driver Az is mirror of physical.
-                    double rawAz = info.Azimuth;
-                    double delta = rawAz - _prevSlewAz;
-                    if (delta >  180.0) delta -= 360.0;
-                    if (delta < -180.0) delta += 360.0;
-                    _prevSlewAz = rawAz;
-                    double physDelta = -delta;   // physical direction = opposite of driver Az
-
-                    if (Math.Abs(physDelta) >= 0.1) {
-                        if (_slewDirectionSign == 0)
-                            _slewDirectionSign = physDelta >= 0 ? +1 : -1;
-                        _slewLiveAccum += physDelta;
+                    // Direction detection: skip tick 0 (likely waypoint), detect from RA
+                    // change on tick 1+. Decreasing RA → westward → HA increases → CW.
+                    _slewTickCount++;
+                    if (_slewDirectionSign == 0 && _slewTickCount >= 2) {
+                        double raChange = info.RightAscension - _preSlewRA;
+                        if (Math.Abs(raChange) >= 0.05)   // > 0.75° of movement detected
+                            _slewDirectionSign = raChange < 0 ? +1 : -1;
                     }
 
-                    // Update live display without touching state.TotalDegreesRotated.
-                    _totalDegreesRotated = _preSlewTotal + _slewLiveAccum;
-                    RaisePropertyChanged(nameof(TotalDegreesRotated));
-                    RaisePropertyChanged(nameof(WrapCount));
-                    RecordGraphSample();
-
-                    // Periodic slew log entry (every 5 seconds)
+                    // Live display frozen at pre-slew total — no mid-slew accumulation.
+                    // Periodic slew log
                     if ((DateTime.UtcNow - _lastSlewLog).TotalSeconds >= 5.0) {
                         _lastSlewLog = DateTime.UtcNow;
-                        CwmLog($"[SLEW] rawAz={rawAz:F2}° physDelta={physDelta:+0.00;-0.00}° liveTotal={_totalDegreesRotated:+0.0;-0.0}°");
+                        double liveHA = GetCurrentHA(info);
+                        CwmLog($"[SLEW] HA={liveHA:F2}° RA={info.RightAscension:F4}h " +
+                               $"LST={info.SiderealTime:F4}h tick={_slewTickCount}");
                     }
 
                     IsMoving = true;
@@ -312,61 +304,51 @@ namespace CableWrapMonitor {
                     TrackingStatus = TrackingStatus.Tracking;
 
                 } else {
-                    // ── Slew just ended — commit endpoint delta ───────────────────────
+                    // ── Slew just ended — commit HA endpoint delta ───────────────────
                     if (_slewInProgress) {
                         _slewInProgress     = false;
                         _lastTrackingSample = DateTime.UtcNow;
                         _lastBranch         = "";
 
-                        // Always update LastKnownAzimuth to the current computed Az so the
-                        // STOPPED branch's catch-up sees a ~0° delta and stays silent.
-                        double postSlewAz = GetComputedAzimuth(info);
-                        state.LastKnownAzimuth = postSlewAz;
+                        // Scope is settled — RA/LST are accurate. Compute post-slew HA.
+                        double postHA = GetCurrentHA(info);
+                        state.LastKnownHA = postHA;
 
                         if (info.AtHome) {
-                            // Home return — the ALPACA driver Az goes spuriously to ~180° as
-                            // soon as the scope starts heading home, long before it arrives.
-                            // The live accumulation and endpoint formula are therefore garbage.
-                            // The correct answer: scope at home ⟹ cable at mechanical zero
-                            // ⟹ total must be a whole-wrap multiple. Restore pre-slew total
+                            // Home return — use snap. The cable is at mechanical zero so the
+                            // total must be a whole-wrap multiple. Restore pre-slew baseline
                             // and snap immediately (no 5-second settle needed).
                             state.TotalDegreesRotated = _preSlewTotal;
                             _totalDegreesRotated      = _preSlewTotal;
-                            CwmLog($"[SLEW-END→HOME] preSlewAz={_preSlewAz:F2}° postAz={postSlewAz:F2}° " +
-                                   $"liveAccum={_slewLiveAccum:+0.1;-0.1}° — Az data garbage during home slew; snapping.");
+                            CwmLog($"[SLEW-END→HOME] preSlewHA={_preSlewHA:F2}° postHA={postHA:F2}° " +
+                                   $"RA={info.RightAscension:F4}h — snapping to whole wrap.");
                             SnapToHomePosition();
                         } else {
-                            // Normal target slew — Az data was reliable. Use direction-based
-                            // endpoint formula: pre/post Az + detected direction.
-                            // CW arc:  (postAz - preAz + 360°) mod 360°  → always positive
-                            // CCW arc: (preAz - postAz + 360°) mod 360°  → negated → negative
-                            double endpointDelta;
-                            if (_slewDirectionSign >= 0) {  // CW
-                                endpointDelta = ((postSlewAz - _preSlewAz) % 360.0 + 360.0) % 360.0;
-                                if (endpointDelta > 359.0) endpointDelta = 0.0;
-                            } else {                        // CCW
-                                endpointDelta = -((_preSlewAz - postSlewAz) % 360.0 + 360.0) % 360.0;
-                                if (endpointDelta < -359.0) endpointDelta = 0.0;
-                            }
+                            // Normal target slew — HA endpoint delta = physical rotation.
+                            // Positive delta → HA increased → CW (cable winding).
+                            // Negative delta → HA decreased → CCW (cable unwinding).
+                            double endpointDelta = postHA - _preSlewHA;
+                            if (endpointDelta >  180.0) endpointDelta -= 360.0;
+                            if (endpointDelta < -180.0) endpointDelta += 360.0;
 
-                            // Restore state to pre-slew total, then commit the correct delta.
-                            // This eliminates any overshoot accumulated in the live display.
+                            // Restore to pre-slew total, then commit the correct delta.
                             state.TotalDegreesRotated = _preSlewTotal;
                             _totalDegreesRotated      = _preSlewTotal;
                             Accumulate(endpointDelta);
 
-                            CwmLog($"[SLEW-END] preSlewAz={_preSlewAz:F2}° postAz={postSlewAz:F2}° rawAz={info.Azimuth:F2}° " +
-                                   $"dir={(_slewDirectionSign >= 0 ? "CW" : "CCW")} " +
-                                   $"liveAccum={_slewLiveAccum:+0.1;-0.1}° endpoint={endpointDelta:+0.1;-0.1}° " +
-                                   $"total={TotalDegreesRotated:+0.0;-0.0}°");
+                            CwmLog($"[SLEW-END] preSlewHA={_preSlewHA:F2}° postHA={postHA:F2}° " +
+                                   $"RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h " +
+                                   $"endpoint={endpointDelta:+0.1;-0.1}° total={TotalDegreesRotated:+0.0;-0.0}°");
                         }
                     }
 
                     if (info.TrackingEnabled) {
-                        // ── TRACKING MODE: Azimuth (RA constant during sidereal tracking) ──
+                        // ── TRACKING MODE: Hour Angle ─────────────────────────────────────
+                        // For a polar-mounted scope, sidereal tracking physically rotates the
+                        // mount at 15°/hour. HA = (LST − RA) × 15° advances at exactly this
+                        // rate during tracking, making it the correct quantity to accumulate.
                         _wasAtHome         = false;
                         _atHomeArrivalTime = DateTime.MinValue;
-                        state.LastKnownRA  = null;
                         IsMoving           = true;
                         MovementIndicator  = "→ tracking";
 
@@ -380,59 +362,59 @@ namespace CableWrapMonitor {
                         if ((now - _lastTrackingSample) >= TrackingSampleInterval) {
                             _lastTrackingSample = now;
 
-                            double currentAzimuth = GetComputedAzimuth(info);
-                            if (state.LastKnownAzimuth.HasValue) {
-                                double delta = currentAzimuth - state.LastKnownAzimuth.Value;
+                            double currentHA = GetCurrentHA(info);
+                            if (state.LastKnownHA.HasValue) {
+                                double delta = currentHA - state.LastKnownHA.Value;
                                 if (delta >  180.0) delta -= 360.0;
                                 if (delta < -180.0) delta += 360.0;
-                                // Sidereal drift is at most ~0.2° per 5-second window even near zenith.
-                                // Anything larger is a mount correction, plate-solve nudge, or driver
-                                // artifact — update the baseline without accumulating so it doesn't
-                                // permanently inflate the cable-wrap counter.
+                                // Sidereal rate = 15°/hour = 0.021° per 5-second window.
+                                // Cap at 2° to filter plate-solve nudges or driver artifacts.
                                 if (Math.Abs(delta) <= 2.0) {
                                     Accumulate(delta);
-                                    CwmLog($"[TRACK] Az delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° (calcAz={currentAzimuth:F2}°)");
+                                    CwmLog($"[TRACK] HA delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}° " +
+                                           $"(HA={currentHA:F2}° RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h)");
                                 } else {
-                                    CwmLog($"[TRACK-SKIP] Az delta={delta:+0.0}° > 2° cap — re-baselining at {currentAzimuth:F2}° (mount correction?)");
+                                    CwmLog($"[TRACK-SKIP] HA delta={delta:+0.0}° > 2° cap — re-baselining at HA={currentHA:F2}°");
                                 }
                             } else {
-                                CwmLog($"[TRACK] Baseline set. calcAz={currentAzimuth:F2}°");
+                                CwmLog($"[TRACK] Baseline set. HA={currentHA:F2}° " +
+                                       $"RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h");
                                 TrackingStatus = TrackingStatus.Tracking;
                             }
-                            state.LastKnownAzimuth = currentAzimuth;
+                            state.LastKnownHA = currentHA;
                         }
 
                     } else {
                         // ── STOPPED ───────────────────────────────────────────────────────
-                        // Not tracking, not slewing. Keep azimuth fresh so the next slew
-                        // has an accurate pre-slew baseline. Snap fires here after FindHome.
-                        state.LastKnownRA  = null;
-                        TrackingStatus     = TrackingStatus.Stopped;
-                        IsMoving           = false;
-                        MovementIndicator  = "";
+                        // Not tracking, not slewing. The mount is physically stationary, so
+                        // we do NOT accumulate HA (HA advances as LST advances even when the
+                        // scope doesn't move). We update LastKnownHA every tick so that when
+                        // tracking restarts, the baseline is fresh and we don't double-count.
+                        TrackingStatus    = TrackingStatus.Stopped;
+                        IsMoving          = false;
+                        MovementIndicator = "";
 
                         if (_lastBranch != "STOP") {
-                            // First STOPPED call — immediately catch any azimuth motion that
-                            // occurred since the last tracking sample (e.g., FindHome completing).
-                            if (state.LastKnownAzimuth.HasValue) {
-                                // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
-                                double immediateAz = GetComputedAzimuth(info);
-                                double catchDelta  = immediateAz - state.LastKnownAzimuth.Value;
+                            // First STOPPED call after tracking — catch the HA motion that
+                            // occurred in the last tracking interval (up to 5 s ago).
+                            if (state.LastKnownHA.HasValue) {
+                                double immediateHA = GetCurrentHA(info);
+                                double catchDelta  = immediateHA - state.LastKnownHA.Value;
                                 if (catchDelta >  180.0) catchDelta -= 360.0;
                                 if (catchDelta < -180.0) catchDelta += 360.0;
                                 if (Math.Abs(catchDelta) >= 0.5) {
                                     Accumulate(catchDelta);
-                                    CwmLog($"[→STOP] Catch-up: Az {state.LastKnownAzimuth.Value:F2}°→{immediateAz:F2}° " +
-                                           $"delta={catchDelta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
+                                    CwmLog($"[→STOP] Catch-up: HA delta={catchDelta:+0.00;-0.00}° " +
+                                           $"total={TotalDegreesRotated:+0.0;-0.0}°");
                                 }
-                                state.LastKnownAzimuth = immediateAz;
+                                state.LastKnownHA = immediateHA;
                             }
                             CwmLog($"[→STOP] Scope stopped. AtHome={info.AtHome} total={TotalDegreesRotated:+0.0;-0.0}°");
                             _lastBranch = "STOP";
                         } else {
-                            // Keep azimuth fresh so the next slew has an accurate pre-slew baseline.
-                            // Always use GetComputedAzimuth — info.Azimuth reports 0° at home (lie).
-                            state.LastKnownAzimuth = GetComputedAzimuth(info);
+                            // Keep HA baseline fresh for the next slew/tracking start.
+                            // Do NOT accumulate — mount is not physically rotating.
+                            state.LastKnownHA = GetCurrentHA(info);
                         }
 
                         // At-home snap: wait for position to fully settle after arriving home,
@@ -520,35 +502,19 @@ namespace CableWrapMonitor {
             }
         }
 
-        // ── Computed azimuth from RA/Dec ──────────────────────────────────────────
+        // ── Hour angle helper ─────────────────────────────────────────────────────
 
         /// <summary>
-        /// Computes azimuth from RA, Dec, sidereal time and site latitude — the same
-        /// way NINA's own UI does. This is smooth and stable even during slews,
-        /// whereas the ALPACA driver's Azimuth property can report garbage mid-slew.
+        /// Returns the current Hour Angle in degrees, normalised to 0–360°.
+        /// HA = (LST − RA) × 15°/h.
         ///
-        /// Az convention: N=0°, E=90°, S=180°, W=270°.
-        /// Falls back to info.Azimuth if site latitude/longitude are not configured.
+        /// For a polar-mounted scope the HA axis IS the physical rotation axis, so
+        /// ΔHA directly equals cable rotation: positive = CW (winding), negative = CCW.
+        /// Sidereal tracking rate: +15°/hour = +0.021°/5 s.
         /// </summary>
-        private static double GetComputedAzimuth(TelescopeInfo info) {
-            // Guard: if site coordinates are not set (both zero), fall back to driver
-            if (Math.Abs(info.SiteLatitude) < 0.001 && Math.Abs(info.SiteLongitude) < 0.001)
-                return info.Azimuth;
-
-            // Hour angle in radians: HA = LST - RA  (both in hours → multiply by π/12)
-            double haRad  = (info.SiderealTime - info.RightAscension) * Math.PI / 12.0;
-            double decRad = info.Declination   * Math.PI / 180.0;
-            double latRad = info.SiteLatitude  * Math.PI / 180.0;
-
-            // Az = atan2(-cos(dec)·sin(ha),  sin(dec)·cos(lat) - cos(dec)·cos(ha)·sin(lat))
-            // Gives N=0°, E=90°, S=180°, W=270° (standard astronomical Az).
-            double x = -Math.Cos(decRad) * Math.Sin(haRad);
-            double y  =  Math.Sin(decRad) * Math.Cos(latRad)
-                       - Math.Cos(decRad) * Math.Cos(haRad) * Math.Sin(latRad);
-
-            double az = Math.Atan2(x, y) * 180.0 / Math.PI;
-            if (az < 0.0) az += 360.0;
-            return az;
+        private static double GetCurrentHA(TelescopeInfo info) {
+            double ha = (info.SiderealTime - info.RightAscension) * 15.0; // hours → degrees
+            return ((ha % 360.0) + 360.0) % 360.0;                        // normalise 0..360
         }
 
         private void FireAlert() {
@@ -581,8 +547,7 @@ namespace CableWrapMonitor {
             state.ZeroSetTimestamp    = DateTime.UtcNow;
             state.LastLoggedWrapCount = 0;
             state.AlertFired          = false;
-            state.LastKnownRA         = null; // re-establish baselines on next update
-            state.LastKnownAzimuth    = null;
+            state.LastKnownHA         = null; // re-establish baseline on next update
 
             _totalDegreesRotated = 0;
             RaisePropertyChanged(nameof(TotalDegreesRotated));
