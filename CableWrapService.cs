@@ -69,14 +69,8 @@ namespace CableWrapMonitor {
         private bool              _wasAtHome          = false;
         private bool              _slewInProgress     = false;
         private int               _slewDirectionSign  = 0;   // +1=CW, -1=CCW, 0=unknown
-        private double            _preSlewTotal       = 0;   // TotalDegreesRotated at slew start
-        private double            _preSlewAz          = double.NaN; // reliable Az at slew start (from stopped state)
-        private DateTime          _slewStartTime      = DateTime.MinValue;
+        private double            _prevSlewAz         = double.NaN; // info.Azimuth on previous tick (for per-tick delta)
         private DateTime          _lastSlewLog        = DateTime.MinValue;
-        // Slew rate constant: 90° in ~53s from test data → 1.7°/s; use 1.5°/s conservatively
-        // so the interpolated display falls slightly short and the end-of-slew snap is always
-        // a small forward correction rather than a backward one.
-        private const double      SlewRateDegsPerSec  = 1.5;
         private bool              _isMoving           = false;
         private string            _movementIndicator  = "";
 
@@ -248,8 +242,7 @@ namespace CableWrapMonitor {
                     _wasAtHome             = false;
                     _slewInProgress        = false;
                     _slewDirectionSign     = 0;
-                    _preSlewAz             = double.NaN;
-                    _slewStartTime         = DateTime.MinValue;
+                    _prevSlewAz            = double.NaN;
                     _atHomeArrivalTime     = DateTime.MinValue;
                     IsMoving               = false;
                     MovementIndicator      = "";
@@ -258,75 +251,59 @@ namespace CableWrapMonitor {
 
                 if (info.Slewing) {
                     // ── SLEW MODE ────────────────────────────────────────────────────────
-                    // The ALPACA driver's RA/Dec during slews does not track the physical
-                    // mount position — it interpolates along an internal path (rawAz ≈ calcAz
-                    // confirmed in testing), so tick-by-tick accumulation is unreliable.
-                    //
-                    // The Seestar S50 ALWAYS slews clockwise (confirmed across multiple test
-                    // sessions). The committed delta at slew-end uses the always-CW formula:
-                    //   delta = (postAz - preAz + 360°) mod 360°   [always positive]
-                    //
-                    // During the slew the display is animated CW at SlewRateDegsPerSec so
-                    // the user sees smooth live progress. Short slews (~90°) animate
-                    // accurately; long slews (~270°) show a forward snap at slew-end.
+                    // Accumulate info.Azimuth tick-by-tick with a ±180° wraparound
+                    // correction. This is the same Az value shown in NINA's mount panel.
+                    // At full tick rate (several Hz) each step is a few degrees at most,
+                    // so the ±180° correction is always unambiguous.
                     _wasAtHome         = false;
                     _atHomeArrivalTime = DateTime.MinValue;
 
                     if (!_slewInProgress) {
                         _slewInProgress    = true;
-                        _slewDirectionSign = +1;   // Seestar always slews CW
-                        _preSlewTotal      = state.TotalDegreesRotated;
-                        _slewStartTime     = DateTime.UtcNow;
+                        _slewDirectionSign = 0;
+                        _prevSlewAz        = info.Azimuth;   // seed from first rawAz tick
                         _lastSlewLog       = DateTime.UtcNow;
-                        _preSlewAz = state.LastKnownAzimuth.HasValue
-                                     ? state.LastKnownAzimuth.Value
-                                     : GetComputedAzimuth(info);
-                        CwmLog($"[→SLEW] Slew started. preSlewAz={_preSlewAz:F2}° rawAz={info.Azimuth:F2}°");
+                        CwmLog($"[→SLEW] Slew started. rawAz seed={_prevSlewAz:F2}° calcAz={GetComputedAzimuth(info):F2}°");
                         _lastBranch = "SLEW";
                     }
 
-                    // Animate CW at SlewRateDegsPerSec. Cap at 270° (observed max slew).
-                    double elapsed   = (DateTime.UtcNow - _slewStartTime).TotalSeconds;
-                    double animDelta = Math.Min(elapsed * SlewRateDegsPerSec, 270.0);
-                    _totalDegreesRotated = _preSlewTotal + animDelta;
-                    RaisePropertyChanged(nameof(TotalDegreesRotated));
-                    RaisePropertyChanged(nameof(WrapCount));
-                    RecordGraphSample();
+                    double rawAz = info.Azimuth;
+                    double delta = rawAz - _prevSlewAz;
+                    if (delta >  180.0) delta -= 360.0;
+                    if (delta < -180.0) delta += 360.0;
+                    _prevSlewAz = rawAz;
+
+                    if (Math.Abs(delta) >= 0.1) {
+                        if (_slewDirectionSign == 0)
+                            _slewDirectionSign = delta >= 0 ? +1 : -1;
+                        Accumulate(delta);
+                    }
 
                     // Periodic slew log entry (every 5 seconds)
                     if ((DateTime.UtcNow - _lastSlewLog).TotalSeconds >= 5.0) {
                         _lastSlewLog = DateTime.UtcNow;
-                        CwmLog($"[SLEW] elapsed={elapsed:F0}s rawAz={info.Azimuth:F2}° animDelta=+{animDelta:F1}°");
+                        CwmLog($"[SLEW] rawAz={rawAz:F2}° delta={delta:+0.00;-0.00}° total={TotalDegreesRotated:+0.0;-0.0}°");
                     }
 
                     IsMoving = true;
-                    MovementIndicator = "↻ CW";
+                    MovementIndicator = _slewDirectionSign > 0 ? "↻ CW" :
+                                        _slewDirectionSign < 0 ? "↺ CCW" : "↻ slewing";
                     TrackingStatus = TrackingStatus.Tracking;
 
                 } else {
-                    // ── Slew just ended — commit accurate short-path delta ─────────────
+                    // ── Slew just ended ───────────────────────────────────────────────
                     if (_slewInProgress) {
                         _slewInProgress     = false;
                         _lastTrackingSample = DateTime.UtcNow;
                         _lastBranch         = "";
 
-                        // Post-slew Az from GetComputedAzimuth is reliable once stopped.
+                        // Update baseline from reliable post-slew Az.
                         double postSlewAz = GetComputedAzimuth(info);
-
-                        // Always-CW formula: CW degrees from pre to post.
-                        // (postAz - preAz + 360°) mod 360° — always in [0°, 360°).
-                        // If delta > 359° the scope barely moved; treat as 0.
-                        double delta = ((postSlewAz - _preSlewAz) % 360.0 + 360.0) % 360.0;
-                        if (delta > 359.0) delta = 0.0;
-
-                        CwmLog($"[SLEW-END] Az {_preSlewAz:F2}°→{postSlewAz:F2}° " +
-                               $"rawAz={info.Azimuth:F2}° (AtHome={info.AtHome}) " +
-                               $"deltaCW=+{delta:F2}°");
-
-                        _slewDirectionSign = delta > 0.5 ? +1 : 0;
-
-                        Accumulate(delta);
                         state.LastKnownAzimuth = postSlewAz;
+                        RecordGraphSample();
+
+                        CwmLog($"[SLEW-END] rawAz={info.Azimuth:F2}° calcAz={postSlewAz:F2}° " +
+                               $"(AtHome={info.AtHome}) total={TotalDegreesRotated:+0.0;-0.0}°");
                     }
 
                     if (info.TrackingEnabled) {
