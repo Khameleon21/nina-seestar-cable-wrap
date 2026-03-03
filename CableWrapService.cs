@@ -71,8 +71,10 @@ namespace CableWrapMonitor {
         private int               _slewDirectionSign  = 0;      // +1=CW, -1=CCW, 0=unknown
         private double            _preSlewTotal       = 0;      // TotalDegreesRotated at slew start
         private double            _preSlewHA          = double.NaN; // HA (degrees) at slew start
-        private double            _preSlewRA          = double.NaN; // RA (hours) at slew start — direction detection
-        private int               _slewTickCount      = 0;      // ticks since slew started (skip tick 0 for direction)
+        private double            _preSlewRA          = double.NaN; // RA (hours) at slew start — direction + endpoint
+        private double            _prevSlewHA         = double.NaN; // HA at previous tick — live display
+        private double            _slewLiveAccum      = 0;      // live-display accumulation (tick 2+ only)
+        private int               _slewTickCount      = 0;      // ticks since slew started (skip tick 0 waypoint)
         private DateTime          _lastSlewLog        = DateTime.MinValue;
         private bool              _isMoving           = false;
         private string            _movementIndicator  = "";
@@ -248,6 +250,8 @@ namespace CableWrapMonitor {
                     _preSlewTotal          = 0;
                     _preSlewHA             = double.NaN;
                     _preSlewRA             = double.NaN;
+                    _prevSlewHA            = double.NaN;
+                    _slewLiveAccum         = 0;
                     _atHomeArrivalTime     = DateTime.MinValue;
                     IsMoving               = false;
                     MovementIndicator      = "";
@@ -270,9 +274,11 @@ namespace CableWrapMonitor {
                         _slewInProgress    = true;
                         _slewDirectionSign = 0;
                         _slewTickCount     = 0;
+                        _slewLiveAccum     = 0;
                         _preSlewTotal      = state.TotalDegreesRotated;
                         _preSlewHA         = state.LastKnownHA ?? GetCurrentHA(info);
                         _preSlewRA         = info.RightAscension;
+                        _prevSlewHA        = _preSlewHA;
                         _lastSlewLog       = DateTime.UtcNow;
                         CwmLog($"[→SLEW] Slew started. preSlewHA={_preSlewHA:F2}° " +
                                $"RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h " +
@@ -280,22 +286,37 @@ namespace CableWrapMonitor {
                         _lastBranch = "SLEW";
                     }
 
-                    // Direction detection: skip tick 0 (likely waypoint), detect from RA
-                    // change on tick 1+. Decreasing RA → westward → HA increases → CW.
                     _slewTickCount++;
+                    double currentSlewHA = GetCurrentHA(info);
+
+                    // Direction detection: skip tick 0 (likely waypoint), detect from RA change.
+                    // Decreasing RA → westward → HA increases → CW.
                     if (_slewDirectionSign == 0 && _slewTickCount >= 2) {
                         double raChange = info.RightAscension - _preSlewRA;
-                        if (Math.Abs(raChange) >= 0.05)   // > 0.75° of movement detected
+                        if (Math.Abs(raChange) >= 0.05)
                             _slewDirectionSign = raChange < 0 ? +1 : -1;
                     }
 
-                    // Live display frozen at pre-slew total — no mid-slew accumulation.
+                    // Live display: tick-by-tick HA deltas from tick 2+ (skip tick 1 waypoint).
+                    // Per-tick deltas are small so ±180° wrap is safe here.
+                    if (_slewTickCount >= 2) {
+                        double liveHADelta = currentSlewHA - _prevSlewHA;
+                        if (liveHADelta >  180.0) liveHADelta -= 360.0;
+                        if (liveHADelta < -180.0) liveHADelta += 360.0;
+                        _slewLiveAccum += liveHADelta;
+                    }
+                    _prevSlewHA = currentSlewHA;
+
+                    _totalDegreesRotated = _preSlewTotal + _slewLiveAccum;
+                    RaisePropertyChanged(nameof(TotalDegreesRotated));
+                    RaisePropertyChanged(nameof(WrapCount));
+                    RecordGraphSample();
+
                     // Periodic slew log
                     if ((DateTime.UtcNow - _lastSlewLog).TotalSeconds >= 5.0) {
                         _lastSlewLog = DateTime.UtcNow;
-                        double liveHA = GetCurrentHA(info);
-                        CwmLog($"[SLEW] HA={liveHA:F2}° RA={info.RightAscension:F4}h " +
-                               $"LST={info.SiderealTime:F4}h tick={_slewTickCount}");
+                        CwmLog($"[SLEW] HA={currentSlewHA:F2}° liveAccum={_slewLiveAccum:+0.1;-0.1}° " +
+                               $"RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h tick={_slewTickCount}");
                     }
 
                     IsMoving = true;
@@ -324,12 +345,26 @@ namespace CableWrapMonitor {
                                    $"RA={info.RightAscension:F4}h — snapping to whole wrap.");
                             SnapToHomePosition();
                         } else {
-                            // Normal target slew — HA endpoint delta = physical rotation.
-                            // Positive delta → HA increased → CW (cable winding).
-                            // Negative delta → HA decreased → CCW (cable unwinding).
-                            double endpointDelta = postHA - _preSlewHA;
-                            if (endpointDelta >  180.0) endpointDelta -= 360.0;
-                            if (endpointDelta < -180.0) endpointDelta += 360.0;
+                            // Normal target slew — use ΔRA to determine direction, then
+                            // apply the always-positive (CW) or always-negative (CCW) arc
+                            // formula. The ±180° short-arc correction is WRONG for slews
+                            // larger than 180°, so direction must resolve the ambiguity.
+                            double deltaRA = info.RightAscension - _preSlewRA;
+                            if (deltaRA >  12.0) deltaRA -= 24.0;  // normalise to ±12h
+                            if (deltaRA < -12.0) deltaRA += 24.0;
+
+                            double endpointDelta;
+                            if (deltaRA < -0.001) {
+                                // RA decreased → westward → HA increases → CW → positive arc
+                                endpointDelta = ((postHA - _preSlewHA) % 360.0 + 360.0) % 360.0;
+                                if (endpointDelta > 359.5) endpointDelta = 0.0;
+                            } else if (deltaRA > 0.001) {
+                                // RA increased → eastward → HA decreases → CCW → negative arc
+                                endpointDelta = -((_preSlewHA - postHA) % 360.0 + 360.0) % 360.0;
+                                if (endpointDelta < -359.5) endpointDelta = 0.0;
+                            } else {
+                                endpointDelta = 0.0; // no significant RA change
+                            }
 
                             // Restore to pre-slew total, then commit the correct delta.
                             state.TotalDegreesRotated = _preSlewTotal;
@@ -337,7 +372,7 @@ namespace CableWrapMonitor {
                             Accumulate(endpointDelta);
 
                             CwmLog($"[SLEW-END] preSlewHA={_preSlewHA:F2}° postHA={postHA:F2}° " +
-                                   $"RA={info.RightAscension:F4}h LST={info.SiderealTime:F4}h " +
+                                   $"ΔRA={deltaRA:+0.000;-0.000}h RA={info.RightAscension:F4}h " +
                                    $"endpoint={endpointDelta:+0.1;-0.1}° total={TotalDegreesRotated:+0.0;-0.0}°");
                         }
                     }
